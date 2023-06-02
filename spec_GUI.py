@@ -18,10 +18,6 @@ class RawDirs:
         self.raw_dir = None
         self.obj_list = None
         self.app = None
-        self.catalogue = None
-        self.agn_6df = None
-        self.dir_lc = None
-        self.dir_6df = None
         self.initial_dir = '/'
 
         self.root = root
@@ -45,116 +41,22 @@ class RawDirs:
         self.label_get_raw_dir.pack()
         self.raw_dir_log.pack()
         self.button_explore.pack()
-        sys.stdout.write = self.redirector  # whenever sys.stdout.write is called, redirector is called.
-
-        # Catalogue (Jack's 6dFGS)
-        self.cat_frame = Frame(self.root)
-        self.label_cat = Label(self.cat_frame,
-                               text="Catalogue:",
-                               width=10)
-        self.label_cat_txt = Label(self.cat_frame,
-                                   text="Select 6dfgs_all_final.csv",
-                                   width=50)
-        self.button_cat = Button(self.cat_frame,
-                                 text="Select",
-                                 command=lambda: self.add_others('cat'))
-        self.label_cat.pack(side=LEFT)
-        self.label_cat_txt.pack(side=LEFT)
-        self.button_cat.pack(side=LEFT)
-
-        # agn_6df - full_catalogue.csv
-        self.agn_frame = Frame(self.root)
-        self.label_agn = Label(self.agn_frame,
-                               text="AGN 6dF:",
-                               width=10)
-        self.label_agn_txt = Label(self.agn_frame,
-                                   text="Select full_catalogue.csv",
-                                   width=50)
-        self.button_agn = Button(self.agn_frame,
-                                 text="Select",
-                                 command=lambda: self.add_others('agn'))
-        self.label_agn.pack(side=LEFT)
-        self.label_agn_txt.pack(side=LEFT)
-        self.button_agn.pack(side=LEFT)
-
-        # Lightcurves directory
-        self.lc_frame = Frame(self.root)
-        self.label_lc = Label(self.lc_frame,
-                              text="Lightcurves:",
-                              width=10)
-        self.label_lc_txt = Label(self.lc_frame,
-                                  text="Select lightcurve directory",
-                                  width=50)
-        self.button_lc = Button(self.lc_frame,
-                                text="Select",
-                                command=lambda: self.add_others('lc'))
-        self.label_lc.pack(side=LEFT)
-        self.label_lc_txt.pack(side=LEFT)
-        self.button_lc.pack(side=LEFT)
-
-        # 6dFGS spectra directory
-        self.spc_frame = Frame(self.root)
-        self.label_6df = Label(self.spc_frame,
-                               text="6dF Spectra:",
-                               width=10)
-        self.label_6df_txt = Label(self.spc_frame,
-                                   text="Select 6dF spectra directory",
-                                   width=50)
-        self.button_6df = Button(self.spc_frame,
-                                 text="Select",
-                                 command=lambda: self.add_others('6df'))
-        self.label_6df.pack(side=LEFT)
-        self.label_6df_txt.pack(side=LEFT)
-        self.button_6df.pack(side=LEFT)
-
+        sys.stdout.write = self.redirector  # the new print function
         self.raw_frame.pack()
-        self.cat_frame.pack(pady=5, ipadx=5, padx=3)
-        self.agn_frame.pack(pady=5, ipadx=5, padx=3)
-        self.lc_frame.pack(pady=5, ipadx=5, padx=3)
-        self.spc_frame.pack(pady=5, ipadx=5, padx=3)
         self.button_raw_dir_next.pack()
 
     def redirector(self, in_str):
+        """ Channels print statements to GUI log """
         self.raw_dir_log.insert(INSERT, in_str)
 
     def raw_dir_next(self):
         """ Check for all fields and continue to the next window """
-        next_ok = True
         if self.obj_list is None:
             self.label_get_raw_dir['foreground'] = 'red'
-            next_ok = next_ok and False
         else:
-            self.label_get_raw_dir['foreground'] = self.default_color
-
-        if self.catalogue is None:
-            self.label_cat_txt['foreground'] = 'red'
-            next_ok = next_ok and False
-        else:
-            self.label_cat_txt['foreground'] = self.default_color
-
-        if self.agn_6df is None:
-            self.label_agn_txt['foreground'] = 'red'
-            next_ok = next_ok and False
-        else:
-            self.label_agn_txt['foreground'] = self.default_color
-
-        if self.dir_lc is None:
-            self.label_lc_txt['foreground'] = 'red'
-            next_ok = next_ok and False
-        else:
-            self.label_lc_txt['foreground'] = self.default_color
-
-        if self.dir_6df is None:
-            self.label_6df_txt['foreground'] = 'red'
-            next_ok = next_ok and False
-        else:
-            self.label_6df_txt['foreground'] = self.default_color
-
-        if next_ok:
             self.root.destroy()  # close the current window
             self.root = Tk()  # create another Tk instance
-            self.app = MainWindow(self.root, self.raw_dir, self.obj_list, self.catalogue,
-                                  self.agn_6df, self.dir_lc, self.dir_6df)
+            self.app = MainWindow(self.root, self.raw_dir, self.obj_list)
             self.root.mainloop()
 
     def read_raw_dir(self):
@@ -172,40 +74,9 @@ class RawDirs:
         self.initial_dir = self.raw_dir
         self.label_get_raw_dir['foreground'] = self.default_color
 
-    def add_others(self, other):
-        """ Adding the different catalogues needed to complete the spectrum """
-        if other == "cat":
-            f = filedialog.askopenfilename(initialdir="../6dFGS/Updated/",
-                                           title="Select 6dfgs_all_final.csv")
-            self.catalogue = pd.read_csv(f)
-            self.label_cat_txt['text'] = f
-            self.label_cat_txt['foreground'] = self.default_color
-            self.initial_dir = f
-        elif other == "agn":
-            f = filedialog.askopenfilename(initialdir="../",
-                                           title="Select full_catalogue.csv")
-            self.agn_6df = pd.read_csv(f)
-            self.label_agn_txt['text'] = f
-            self.label_agn_txt['foreground'] = self.default_color
-            self.initial_dir = f
-        elif other == "lc":
-            self.dir_lc = filedialog.askdirectory(initialdir="lightcurves/",
-                                                  title="Select lightcurve directory")
-            self.label_lc_txt['text'] = self.dir_lc
-            self.label_lc_txt['foreground'] = self.default_color
-            self.initial_dir = self.dir_lc
-        elif other == "6df":
-            self.dir_6df = filedialog.askdirectory(initialdir="6dFGS_raw/",
-                                                   title="Select 6dFGS spectra directory")
-            self.label_6df_txt['text'] = self.dir_6df
-            self.label_6df_txt['foreground'] = self.default_color
-            self.initial_dir = self.dir_6df
-        else:
-            print("Select from [cat, agn, lc, 6df]")
-
 
 class MainWindow:
-    def __init__(self, root, raw_dir, obj_list, catalogue, agn_6df, dir_lc, dir_6df):
+    def __init__(self, root, raw_dir, obj_list):
         sys.stdout.write = self.redirector  # whenever sys.stdout.write is called, redirector is called.
         self.raw_dir = raw_dir
         self.spat_plot_dir = raw_dir + "/out/spat_plots/"
@@ -214,10 +85,6 @@ class MainWindow:
         self.obj_list = obj_list
         self.name_list = list(self.obj_list['object'])
         self.len_loaded = len(self.obj_list)
-        self.catalogue = catalogue
-        self.agn_6df = agn_6df
-        self.dir_lc = dir_lc
-        self.dir_6df = dir_6df
         self.root = root
         self.root.title("Spectra Extractor")
         self.counter = 0
@@ -235,6 +102,9 @@ class MainWindow:
         self.col = 12
         self.row_min = 30
         self.col_min = 12
+        self.r = 2  # aperture radius
+        self.sky_aperture = 'disjoint'  # [disjoint, annular]
+        self.sky_r = 2  # sky aperture radius
 
         # Frames
         self.details_frame = Frame(self.root)
@@ -294,10 +164,9 @@ class MainWindow:
         print(self.name_list)
 
         # Get the SpecExtract object for the current object and show initial plots
-        self.spec_object = se.SpecExtract(self.current_row['object'], self.current_row['red'],
-                                          self.current_row['blue'], agn_6df=self.agn_6df,
-                                          dir_lc=self.dir_lc, dir_6df=self.dir_6df,
-                                          lc=False)
+        self.spec_object = se.SpecExtract(self.current_row['object'],
+                                          self.current_row['red'],
+                                          self.current_row['blue'])
         self.run_spec(save=False)
 
     def opt_select_cmd(self, choice):
@@ -306,10 +175,9 @@ class MainWindow:
         self.label_counter['text'] = f"{self.counter + 1}/{self.len_loaded}"
         self.current_row = self.obj_list[self.obj_list['object'] == choice].iloc[0]
         self.reset_plots()
-        self.spec_object = se.SpecExtract(self.current_row['object'], self.current_row['red'],
-                                          self.current_row['blue'], agn_6df=self.agn_6df,
-                                          dir_lc=self.dir_lc, dir_6df=self.dir_6df,
-                                          lc=False)
+        self.spec_object = se.SpecExtract(self.current_row['object'],
+                                          self.current_row['red'],
+                                          self.current_row['blue'])
         self.run_spec()
 
     def redirector(self, in_str):
@@ -331,7 +199,7 @@ class MainWindow:
         self.spat_toolbar.update()
 
         self.spec_object.make_masks()
-        self.spec_object.save_spec(save_loc=self.spec_data_dir, save=save)
+        self.spec_object.generate_spec(save_loc=self.spec_data_dir, save=save)
 
         self.spec_fig = self.spec_object.plot_spec(save=save, save_loc=self.spec_plot_dir)
         self.spec_canvas = FigureCanvasTkAgg(self.spec_fig, master=self.spec_frame)
@@ -345,7 +213,7 @@ class MainWindow:
 
     def save_current(self):
         """ Save the current spatial+spectral plots and spectral data """
-        print(f"Saving {self.spec_object.gname}...")
+        print(f"Saving {self.spec_object.obj_name}...")
         self.reset_plots()
         self.run_spec(save=True)
         print("Saved in " + self.raw_dir + "/out/")
@@ -359,10 +227,9 @@ class MainWindow:
             self.label_counter['text'] = f"{self.counter + 1}/{self.len_loaded}"
             self.current_row = self.obj_list[self.obj_list['object'] == self.name_list[self.counter]].iloc[0]
             self.reset_plots()
-            self.spec_object = se.SpecExtract(self.current_row['object'], self.current_row['red'],
-                                              self.current_row['blue'], agn_6df=self.agn_6df,
-                                              dir_lc=self.dir_lc, dir_6df=self.dir_6df,
-                                              lc=False)
+            self.spec_object = se.SpecExtract(self.current_row['object'],
+                                              self.current_row['red'],
+                                              self.current_row['blue'])
             self.run_spec()
 
     def back_cmd(self):
@@ -374,10 +241,9 @@ class MainWindow:
             self.label_counter['text'] = f"{self.counter + 1}/{self.len_loaded}"
             self.current_row = self.obj_list[self.obj_list['object'] == self.name_list[self.counter]].iloc[0]
             self.reset_plots()
-            self.spec_object = se.SpecExtract(self.current_row['object'], self.current_row['red'],
-                                              self.current_row['blue'], agn_6df=self.agn_6df,
-                                              dir_lc=self.dir_lc, dir_6df=self.dir_6df,
-                                              lc=False)
+            self.spec_object = se.SpecExtract(self.current_row['object'],
+                                              self.current_row['red'],
+                                              self.current_row['blue'])
             self.run_spec()
 
     def get_row_col_click(self, event):
@@ -421,9 +287,6 @@ class MainWindow:
 
 master = Tk()
 # app = RawDirs(master)  # Run the app
-app = MainWindow(master, "raw_wifes/thru20230416/",
-                 pd.read_csv("raw_wifes/thru20230416/object_fits_list.csv"),
-                 pd.read_csv("../6dFGS/Updated/6dfgs_all_final.csv"),
-                 pd.read_csv("../full_catalogue.csv"),
-                 "lightcurves/", "6dFGS_raw/")  # Testing
+app = MainWindow(master, "../Data/raw_wifes/",
+                 pd.read_csv("../Data/raw_wifes/object_fits_list.csv"))  # Testing
 master.mainloop()
