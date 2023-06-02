@@ -58,7 +58,7 @@ full_min, full_max = 4000, 7500  # WiFeS spectra range
 
 
 class SpecExtract:
-    def __init__(self, obj_name, red_f, blue_f):
+    def __init__(self, obj_name, red_f, blue_f, **kwargs):
         self.obj_name = obj_name
 
         print(f"Opening {obj_name}...")
@@ -100,6 +100,9 @@ class SpecExtract:
         self.central_err = None
         self.wave_wifes = None
 
+        for key, value in kwargs.items():
+            setattr(self, key, value)
+
         self.red_hdu.close()
         self.blue_hdu.close()
 
@@ -119,7 +122,6 @@ class SpecExtract:
             x, y = np.ogrid[-self.row_min:n_row - self.row_min, -self.col_min:n_col - self.col_min]
             self.mask_min = x * x + y * y <= self.sky_r ** 2
         elif self.sky_aperture == 'annular':
-            x, y = np.ogrid[-self.row:n_row - self.row, -self.col:n_col - self.col]
             self.mask_min = (x * x + y * y >= self.r ** 2) & (x * x + y * y <= (self.r + self.sky_r) ** 2)
         else:
             print("Choose sky aperture from [disjoint, annular]")
@@ -143,14 +145,13 @@ class SpecExtract:
             cat['col_sky'] = self.col
         else:
             print("Choose sky aperture from [disjoint, annular]")
-
         cat['sky_rad'] = self.sky_r
 
         # Average of sky in aperture
         blue_mean = np.mean(self.blue[:, self.mask_min], axis=1)
         red_mean = np.mean(self.red[:, self.mask_min], axis=1)
         blue_sky_sem = np.mean(self.blue_e[:, self.mask_min], axis=1) / np.sqrt(
-            self.blue_e[:, self.mask_min].shape[1])
+            self.blue_e[:, self.mask_min].shape[1])  # error
         red_sky_sem = np.mean(self.red_e[:, self.mask_min], axis=1) / np.sqrt(
             self.red_e[:, self.mask_min].shape[1])  # error
 
@@ -186,8 +187,8 @@ class SpecExtract:
             circle3 = plt.Circle((self.col, self.row), self.r + self.sky_r, color='r', linestyle='--', fill=False)
             circle4 = plt.Circle((self.col, self.row), self.r + self.sky_r, color='r', linestyle='--', fill=False)
         else:
-            circle3 = plt.Circle((self.col_min, self.row_min), self.r, color='r', linestyle='--', fill=False)
-            circle4 = plt.Circle((self.col_min, self.row_min), self.r, color='r', linestyle='--', fill=False)
+            circle3 = plt.Circle((self.col_min, self.row_min), self.sky_r, color='r', linestyle='--', fill=False)
+            circle4 = plt.Circle((self.col_min, self.row_min), self.sky_r, color='r', linestyle='--', fill=False)
 
         rect1 = plt.Rectangle((self.col - 0.5, self.row - 0.5), 1, 1, color='r', fill=False)
         rect2 = plt.Rectangle((self.col - 0.5, self.row - 0.5), 1, 1, color='r', fill=False)
@@ -226,16 +227,18 @@ class SpecExtract:
         fig, ax = plt.subplots(1, 1, figsize=(12.15, 3))
         ax.plot(self.wave_wifes, self.spec_wifes_raw, 'b-',
                 linewidth=0.75, label='WiFeS', zorder=2)
+        ax.plot(self.wave_wifes, self.spec_wifes_err, 'r-',
+                linewidth=0.55, label='Error', zorder=3)
 
         # Shade error
         ax.fill_between(self.wave_wifes, (self.spec_wifes_raw - e_wif), (self.spec_wifes_raw + e_wif),
-                        alpha=0.2, facecolor='b')
+                        alpha=0.3, facecolor='r')
 
         # Labels
         ax.set_xlabel(r'Wavelength ($\AA$)')
         ax.set_ylabel(r'Flux ($erg\ s^{-1}\ cm^{-2}\ \AA^{-1}$)')
+        ax.set_xlim([full_min, full_max])
         ax.legend(loc='upper left', fontsize=10)
-        ax.autoscale_view()
         plt.tight_layout()
 
         # Save
@@ -304,6 +307,7 @@ def make_amalgamated_file(raw_dir):
 
     return obj_list
 
+# Testing
 # spec_extract = SpecExtract("g0209537-135321",
 #                            "../Data/CLAGNPlotter/raw_wifes/202211/T2m3wr-20221122.123045-0128.p11.fits",
 #                            "../Data/CLAGNPlotter/raw_wifes/202211/T2m3wb-20221122.123045-0128.p11.fits")

@@ -1,14 +1,16 @@
-import matplotlib
-from tkinter import *
-from tkinter.ttk import *
-from tkinter import filedialog
+import os
 import sys
+from tkinter import *
+from tkinter import filedialog
+from tkinter.ttk import *
+
+import matplotlib
 import matplotlib.pyplot as plt
+import pandas as pd
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.backends.backend_tkagg import NavigationToolbar2Tk
-import pandas as pd
+
 import spectra_extractor as se
-import os
 
 matplotlib.use('TkAgg')
 
@@ -48,6 +50,7 @@ class RawDirs:
     def redirector(self, in_str):
         """ Channels print statements to GUI log """
         self.raw_dir_log.insert(INSERT, in_str)
+        self.raw_dir_log.see("end")
 
     def raw_dir_next(self):
         """ Check for all fields and continue to the next window """
@@ -103,11 +106,11 @@ class MainWindow:
         self.row_min = 30
         self.col_min = 12
         self.r = 2  # aperture radius
-        self.sky_aperture = 'disjoint'  # [disjoint, annular]
+        self.sky_aperture = 'annular'  # [disjoint, annular]
         self.sky_r = 2  # sky aperture radius
 
         # Frames
-        self.details_frame = Frame(self.root)
+        self.obj_sky_frame = Frame(self.root)
         self.spatial_frame = Frame(self.root, borderwidth=2, relief='sunken')
         self.spec_frame = Frame(self.root, borderwidth=2, relief='sunken')
         self.btn_frame = Frame(self.root, borderwidth=2, relief='sunken')
@@ -129,19 +132,38 @@ class MainWindow:
         self.btn_back = Button(self.btn_frame,
                                text="< Back", command=self.back_cmd)
         self.opt_select = StringVar(self.btn_frame)
-        self.opt_select.set(self.name_list[self.counter])
-        self.opt_name = OptionMenu(self.btn_frame,
-                                   self.opt_select, *self.name_list,
+        # self.opt_select.set(self.name_list[self.counter])
+        self.opt_name = OptionMenu(self.btn_frame, self.opt_select,
+                                   self.name_list[self.counter], *self.name_list,
                                    command=self.opt_select_cmd)
         self.label_counter = Label(self.btn_frame,
                                    text=f"{self.counter + 1}/{self.len_loaded}")
 
         # Radio buttons to toggle sky and object position click event
-        self.click_choice = StringVar(self.details_frame, "obj")
-        self.label_click_select = Label(self.details_frame,
-                                        text=f"Choose sky or object to move aperture on plot: ")
-        self.radio_obj = Radiobutton(self.details_frame, text="Object", variable=self.click_choice, value='obj')
-        self.radio_sky = Radiobutton(self.details_frame, text="Sky", variable=self.click_choice, value='sky')
+        self.click_choice = StringVar(self.obj_sky_frame, "obj")
+        self.label_click_select = Label(self.obj_sky_frame,
+                                        text=f"Click on plot to change: ")
+        self.radio_obj = Radiobutton(self.obj_sky_frame, text="Object", variable=self.click_choice, value='obj')
+        self.radio_sky = Radiobutton(self.obj_sky_frame, text="Sky", variable=self.click_choice, value='sky')
+
+        # Radio buttons to toggle sky aperture
+        self.sky_choice = StringVar(self.obj_sky_frame, self.sky_aperture)
+        self.label_sky_select = Label(self.obj_sky_frame,
+                                      text="Sky type: ")
+        self.radio_sky_free = Radiobutton(self.obj_sky_frame,
+                                          text="Free", variable=self.sky_choice, value='disjoint',
+                                          command=self.change_sky_aperture)
+        self.radio_sky_ann = Radiobutton(self.obj_sky_frame,
+                                         text="Annular", variable=self.sky_choice, value='annular',
+                                         command=self.change_sky_aperture)
+
+        self.r_apt_var = DoubleVar(self.obj_sky_frame, self.r)
+        self.r_sky_var = DoubleVar(self.obj_sky_frame, self.sky_r)
+        self.label_r_apt = Label(self.obj_sky_frame, text="Aperture R:")
+        self.entry_r_apt = Entry(self.obj_sky_frame, textvariable=self.r_apt_var, width=5)
+        self.label_r_sky = Label(self.obj_sky_frame, text="Sky R/width:")
+        self.entry_r_sky = Entry(self.obj_sky_frame, textvariable=self.r_sky_var, width=5)
+        self.btn_r_entry = Button(self.obj_sky_frame, text="Enter", command=self.enter_r_apt_sky)
 
         # Pack buttons in order
         self.label_counter.pack(side=LEFT)
@@ -154,9 +176,17 @@ class MainWindow:
         self.label_click_select.pack(side=LEFT)
         self.radio_obj.pack(side=LEFT)
         self.radio_sky.pack(side=LEFT)
+        self.label_sky_select.pack(side=LEFT, padx=(30, 1))
+        self.radio_sky_ann.pack(side=LEFT)
+        self.radio_sky_free.pack(side=LEFT)
+        self.label_r_apt.pack(side=LEFT, padx=(30, 1))
+        self.entry_r_apt.pack(side=LEFT)
+        self.label_r_sky.pack(side=LEFT, padx=(10, 1))
+        self.entry_r_sky.pack(side=LEFT)
+        self.btn_r_entry.pack(side=LEFT)
 
         # Pack the frames
-        self.details_frame.pack(side=TOP)
+        self.obj_sky_frame.pack(side=TOP)
         self.btn_frame.pack(side=BOTTOM)
         self.spec_frame.pack(fill=X, side=BOTTOM)
         self.log_frame.pack(fill=BOTH, side=RIGHT, expand=True)
@@ -164,10 +194,10 @@ class MainWindow:
         print(self.name_list)
 
         # Get the SpecExtract object for the current object and show initial plots
-        self.spec_object = se.SpecExtract(self.current_row['object'],
-                                          self.current_row['red'],
-                                          self.current_row['blue'])
+        self.spec_object = self.get_new_spec_object()
+
         self.run_spec(save=False)
+        self.root.bind('<Return>', self.enter_r_apt_sky)
 
     def opt_select_cmd(self, choice):
         """ Option menu selector """
@@ -175,14 +205,13 @@ class MainWindow:
         self.label_counter['text'] = f"{self.counter + 1}/{self.len_loaded}"
         self.current_row = self.obj_list[self.obj_list['object'] == choice].iloc[0]
         self.reset_plots()
-        self.spec_object = se.SpecExtract(self.current_row['object'],
-                                          self.current_row['red'],
-                                          self.current_row['blue'])
+        self.spec_object = self.get_new_spec_object()
         self.run_spec()
 
     def redirector(self, in_str):
         """ Print statements go to log text space """
         self.raw_dir_log.insert(INSERT, in_str)
+        self.raw_dir_log.see("end")
 
     def clear_log(self):
         """ Clear the log """
@@ -227,9 +256,7 @@ class MainWindow:
             self.label_counter['text'] = f"{self.counter + 1}/{self.len_loaded}"
             self.current_row = self.obj_list[self.obj_list['object'] == self.name_list[self.counter]].iloc[0]
             self.reset_plots()
-            self.spec_object = se.SpecExtract(self.current_row['object'],
-                                              self.current_row['red'],
-                                              self.current_row['blue'])
+            self.spec_object = self.get_new_spec_object()
             self.run_spec()
 
     def back_cmd(self):
@@ -241,33 +268,36 @@ class MainWindow:
             self.label_counter['text'] = f"{self.counter + 1}/{self.len_loaded}"
             self.current_row = self.obj_list[self.obj_list['object'] == self.name_list[self.counter]].iloc[0]
             self.reset_plots()
-            self.spec_object = se.SpecExtract(self.current_row['object'],
-                                              self.current_row['red'],
-                                              self.current_row['blue'])
+            self.spec_object = self.get_new_spec_object()
             self.run_spec()
 
     def get_row_col_click(self, event):
         """ Get the object position """
         if event.inaxes is not None:
             if self.click_choice.get() == 'sky':
-                self.col_min = int(event.xdata)
-                self.row_min = int(event.ydata)
-                print(f"Set new position for sky at {self.col_min}, {self.row_min}")
-                self.update_spec_object()
-                self.reset_plots()
-                self.run_spec()
+                if self.sky_aperture == 'disjoint':
+                    self.col_min = int(event.xdata)
+                    self.row_min = int(event.ydata)
+                    print(f"Set new position for sky at {self.col_min}, {self.row_min}")
+                    self.update_spec_object()
+                else:
+                    print("Select free sky aperture to choose sky region.")
             else:
                 self.col = int(event.xdata)
                 self.row = int(event.ydata)
                 print(f"Set new position for obj at {self.col}, {self.row}")
-                self.col_min = int(event.xdata)
-                self.row_min = 30
-                print(f"Set new position for sky at {self.col_min}, {self.row_min}")
                 self.update_spec_object()
-                self.reset_plots()
-                self.run_spec()
         else:
             print('Clicked outside axes bounds')
+
+    def change_sky_aperture(self):
+        self.sky_aperture = self.sky_choice.get()
+        self.update_spec_object()
+
+    def enter_r_apt_sky(self, event=None):
+        self.r = self.r_apt_var.get()
+        self.sky_r = self.r_sky_var.get()
+        self.update_spec_object()
 
     def update_spec_object(self):
         """ Update the position of object and sky """
@@ -275,6 +305,23 @@ class MainWindow:
         self.spec_object.col = self.col
         self.spec_object.row_min = self.row_min
         self.spec_object.col_min = self.col_min
+        self.spec_object.r = self.r
+        self.spec_object.sky_aperture = self.sky_aperture
+        self.spec_object.sky_r = self.sky_r
+        self.reset_plots()
+        self.run_spec()
+
+    def get_new_spec_object(self):
+        return se.SpecExtract(self.current_row['object'],
+                              self.current_row['red'],
+                              self.current_row['blue'],
+                              r=self.r,
+                              sky_aperture=self.sky_aperture,
+                              sky_r=self.sky_r,
+                              row=self.row,
+                              col=self.col,
+                              row_min=self.row_min,
+                              col_min=self.col_min)
 
     def reset_plots(self):
         """ Destroy the previous plots """
@@ -287,6 +334,6 @@ class MainWindow:
 
 master = Tk()
 # app = RawDirs(master)  # Run the app
-app = MainWindow(master, "../Data/raw_wifes/",
-                 pd.read_csv("../Data/raw_wifes/object_fits_list.csv"))  # Testing
+app = MainWindow(master, "../Data/CLAGNPlotter/raw_wifes/",
+                 pd.read_csv("../Data/CLAGNPlotter/raw_wifes/object_fits_list.csv"))  # Testing
 master.mainloop()
