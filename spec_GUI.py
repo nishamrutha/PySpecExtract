@@ -6,9 +6,9 @@ from tkinter.ttk import *
 
 import matplotlib
 import matplotlib.pyplot as plt
-import pandas as pd
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.backends.backend_tkagg import NavigationToolbar2Tk
+import pandas as pd
 
 import spectra_extractor as se
 
@@ -22,9 +22,10 @@ class RawDirs:
         self.app = None
         self.initial_dir = '/'
 
+        # TkInter App root
         self.root = root
 
-        # Get raw dir
+        # Arrange directory selection window
         self.raw_frame = Frame(self.root)
         self.root.title("Raw File Directory")
         self.raw_dir_log = Text(self.raw_frame, height=10)
@@ -32,10 +33,12 @@ class RawDirs:
                                        text="Choose a directory with reduced WiFeS .fits files.")
         self.default_color = self.label_get_raw_dir['foreground']
 
+        # Button to open file explorer
         self.button_explore = Button(self.raw_frame,
                                      text="Select Directory",
                                      command=self.read_raw_dir)
 
+        # Button to continue
         self.button_raw_dir_next = Button(self.root,
                                           text="Continue",
                                           command=self.raw_dir_next)
@@ -43,27 +46,29 @@ class RawDirs:
         self.label_get_raw_dir.pack()
         self.raw_dir_log.pack()
         self.button_explore.pack()
-        sys.stdout.write = self.redirector  # the new print function
+        sys.stdout.write = self.text_redirector  # the new print function
         self.raw_frame.pack()
         self.button_raw_dir_next.pack()
 
-    def redirector(self, in_str):
+    def text_redirector(self, in_str):
         """ Channels print statements to GUI log """
         self.raw_dir_log.insert(INSERT, in_str)
         self.raw_dir_log.see("end")
 
     def raw_dir_next(self):
-        """ Check for all fields and continue to the next window """
+        """ Check for object list file and continue to the next window """
         if self.obj_list is None:
             self.label_get_raw_dir['foreground'] = 'red'
         else:
-            self.root.destroy()  # close the current window
-            self.root = Tk()  # create another Tk instance
+            # Clear the current window
+            for w in self.root.winfo_children():
+                w.destroy()
+
+            # Start the main GUI window
             self.app = MainWindow(self.root, self.raw_dir, self.obj_list)
-            self.root.mainloop()
 
     def read_raw_dir(self):
-        """ Read the .fits files in the raw dir and make output dir structure """
+        """ Read the .p11.fits files in inout directory and make output dir structure """
         self.raw_dir = filedialog.askdirectory(initialdir=self.initial_dir,
                                                title="Select directory with reduced WiFeS cubes")
 
@@ -80,19 +85,28 @@ class RawDirs:
 
 class MainWindow:
     def __init__(self, root, raw_dir, obj_list):
-        sys.stdout.write = self.redirector  # whenever sys.stdout.write is called, redirector is called.
+        sys.stdout.write = self.text_redirector  # new print function
+
+        # Directories
         self.raw_dir = raw_dir
         self.spat_plot_dir = raw_dir + "/out/spat_plots/"
         self.spec_plot_dir = raw_dir + "/out/spec_plots/"
         self.spec_data_dir = raw_dir + "/out/WiFeS/"
+
+        # Object list
         self.obj_list = obj_list
         self.name_list = list(self.obj_list['object'])
         self.len_loaded = len(self.obj_list)
+
+        # App root
         self.root = root
-        self.root.title("Spectra Extractor")
+        self.root.title("Spectrum Extractor")
+
+        # Track iteration
         self.counter = 0
         self.current_row = self.obj_list.iloc[self.counter]
-        self.spec_object = None
+
+        # Plot widgets
         self.spat_plot_wid = None
         self.spat_canvas = None
         self.spat_toolbar = None
@@ -101,6 +115,9 @@ class MainWindow:
         self.spec_canvas = None
         self.spec_plot_wid = None
         self.spec_toolbar = None
+
+        # SpecExtract object parameters
+        self.spec_object = None
         self.row = 16
         self.col = 12
         self.row_min = 30
@@ -114,13 +131,13 @@ class MainWindow:
         self.spatial_frame = Frame(self.root, borderwidth=2, relief='sunken')
         self.spec_frame = Frame(self.root, borderwidth=2, relief='sunken')
         self.btn_frame = Frame(self.root, borderwidth=2, relief='sunken')
-
-        # Log frame
         self.log_frame = Frame(self.root, borderwidth=2, relief='sunken')
+
+        # Log
         self.raw_dir_log = Text(self.log_frame, height=10)
         self.raw_dir_log.pack(fill=BOTH, expand=True)
 
-        # Buttons
+        # Buttons to save and navigate objects
         self.btn_exit = Button(self.btn_frame,
                                text="Exit", command=exit)
         self.btn_clr_log = Button(self.btn_frame,
@@ -131,8 +148,9 @@ class MainWindow:
                                text="Next >", command=self.next_cmd)
         self.btn_back = Button(self.btn_frame,
                                text="< Back", command=self.back_cmd)
+
+        # Option menu to select specific object
         self.opt_select = StringVar(self.btn_frame)
-        # self.opt_select.set(self.name_list[self.counter])
         self.opt_name = OptionMenu(self.btn_frame, self.opt_select,
                                    self.name_list[self.counter], *self.name_list,
                                    command=self.opt_select_cmd)
@@ -157,6 +175,7 @@ class MainWindow:
                                          text="Annular", variable=self.sky_choice, value='annular',
                                          command=self.change_sky_aperture)
 
+        # Entry box to set object and sky aperture size
         self.r_apt_var = DoubleVar(self.obj_sky_frame, self.r)
         self.r_sky_var = DoubleVar(self.obj_sky_frame, self.sky_r)
         self.label_r_apt = Label(self.obj_sky_frame, text="Aperture R:")
@@ -191,13 +210,14 @@ class MainWindow:
         self.spec_frame.pack(fill=X, side=BOTTOM)
         self.log_frame.pack(fill=BOTH, side=RIGHT, expand=True)
         self.spatial_frame.pack()
-        print(self.name_list)
 
-        # Get the SpecExtract object for the current object and show initial plots
-        self.spec_object = self.get_new_spec_object()
-
-        self.run_spec(save=False)
+        # Miscellaneous
+        print(f"Loaded {self.len_loaded} objects.")
         self.root.bind('<Return>', self.enter_r_apt_sky)
+
+        # Get the SpecExtract object for the current object and show plots
+        self.spec_object = self.get_new_spec_object()
+        self.run_spec(save=False)
 
     def opt_select_cmd(self, choice):
         """ Option menu selector """
@@ -208,8 +228,8 @@ class MainWindow:
         self.spec_object = self.get_new_spec_object()
         self.run_spec()
 
-    def redirector(self, in_str):
-        """ Print statements go to log text space """
+    def text_redirector(self, in_str):
+        """ Redirect print statements to log text space """
         self.raw_dir_log.insert(INSERT, in_str)
         self.raw_dir_log.see("end")
 
@@ -218,7 +238,7 @@ class MainWindow:
         self.raw_dir_log.delete(1.0, END)
 
     def run_spec(self, save=False):
-        """ Make spatial+spectral plot along with sky-subtracted data """
+        """ Generate spatial+spectral plot along with sky-subtracted data """
         self.spat_fig = self.spec_object.plot_spatial(save=save, save_loc=self.spat_plot_dir)
         self.spat_fig.canvas.callbacks.connect('button_press_event', self.get_row_col_click)
         self.spat_canvas = FigureCanvasTkAgg(self.spat_fig, master=self.spatial_frame)
@@ -272,8 +292,8 @@ class MainWindow:
             self.run_spec()
 
     def get_row_col_click(self, event):
-        """ Get the object position """
-        if event.inaxes is not None:
+        """ Get object position from click events and update plots """
+        if event.inaxes is not None:  # click inside axes
             if self.click_choice.get() == 'sky':
                 if self.sky_aperture == 'disjoint':
                     self.col_min = int(event.xdata)
@@ -291,16 +311,18 @@ class MainWindow:
             print('Clicked outside axes bounds')
 
     def change_sky_aperture(self):
+        """ Toggle free and annular sky aperture and update plots """
         self.sky_aperture = self.sky_choice.get()
         self.update_spec_object()
 
-    def enter_r_apt_sky(self, event=None):
+    def enter_r_apt_sky(self, _):
+        """ Set object and sky aperture radius and update plots """
         self.r = self.r_apt_var.get()
         self.sky_r = self.r_sky_var.get()
         self.update_spec_object()
 
     def update_spec_object(self):
-        """ Update the position of object and sky """
+        """ Update SpecExtract and GUI plots """
         self.spec_object.row = self.row
         self.spec_object.col = self.col
         self.spec_object.row_min = self.row_min
@@ -312,6 +334,7 @@ class MainWindow:
         self.run_spec()
 
     def get_new_spec_object(self):
+        """ Generate new SpecExtract object """
         return se.SpecExtract(self.current_row['object'],
                               self.current_row['red'],
                               self.current_row['blue'],
@@ -333,7 +356,7 @@ class MainWindow:
 
 
 master = Tk()
-# app = RawDirs(master)  # Run the app
-app = MainWindow(master, "../Data/CLAGNPlotter/raw_wifes/",
-                 pd.read_csv("../Data/CLAGNPlotter/raw_wifes/object_fits_list.csv"))  # Testing
+app = RawDirs(master)  # Run the app
+# app = MainWindow(master, "../Data/CLAGNPlotter/raw_wifes/",
+#                  pd.read_csv("../Data/CLAGNPlotter/raw_wifes/object_fits_list.csv"))  # Testing
 master.mainloop()
