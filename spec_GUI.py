@@ -315,7 +315,7 @@ class MainWindow:
         self.sky_aperture = self.sky_choice.get()
         self.update_spec_object()
 
-    def enter_r_apt_sky(self, _):
+    def enter_r_apt_sky(self, _=None):
         """ Set object and sky aperture radius and update plots """
         self.r = self.r_apt_var.get()
         self.sky_r = self.r_sky_var.get()
