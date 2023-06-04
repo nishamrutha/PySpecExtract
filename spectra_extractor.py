@@ -70,7 +70,7 @@ class SpecExtract:
 
         print(f"Opening {obj_name}...")
 
-        # Open red and bluw FITS files
+        # Open red and blue FITS files
         self.red_hdu = fits.open(red_f)
         self.blue_hdu = fits.open(blue_f)
 
@@ -102,7 +102,7 @@ class SpecExtract:
         self.sky_aperture = 'disjoint'  # [disjoint, annular]
         self.sky_r = 2  # sky aperture radius
 
-        # Disjoint sky positon
+        # Disjoint sky position
         self.row_min = 30
         self.col_min = 12
 
@@ -133,7 +133,7 @@ class SpecExtract:
         if self.sky_aperture == 'disjoint':  # Free
             x, y = np.ogrid[-self.row_min:n_row - self.row_min, -self.col_min:n_col - self.col_min]
             self.mask_min = x * x + y * y <= self.sky_r ** 2
-        elif self.sky_aperture == 'annular':  # Annualr
+        elif self.sky_aperture == 'annular':  # Annular
             self.mask_min = (x * x + y * y >= self.r ** 2) & (x * x + y * y <= (self.r + self.sky_r) ** 2)
         else:
             print("Choose sky aperture from [disjoint, annular]")
