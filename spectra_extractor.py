@@ -329,13 +329,17 @@ def red_blue_filename_sep(obj):
 
 def make_amalgamated_file(raw_dir):
     """
+    Read directory containing FITS files, or subdirectories containing FITS files
+    and save a .csv file listing object and red/blue p11 FITS file paths
 
-    :param raw_dir:
-    :return:
+    :param raw_dir: path to directory containing FITS files
+    :return: master list containing object and red/blue p11 FITS file paths
     """
+    # Read .p11.fits files
     raw_file_list = glob.glob(f"{raw_dir}/**/*.p11.fits", recursive=True)
     print(f"Found {len(raw_file_list)} files.")
 
+    # Generate object - file relation
     print(f"Generating {raw_dir}/object_fits_list.csv...")
     with open(f'{raw_dir}/object_fits_list.csv', 'w') as obj_list:
         obj_list.write('file,object\n')  # Column names
@@ -348,12 +352,14 @@ def make_amalgamated_file(raw_dir):
                     obj_list.write(f"{f},{obj}\n")
     print("Done")
 
+    # Group red/blue file - object relation
     print(f"Condensing {raw_dir}/object_fits_list.csv...")
     obj_list = pd.read_csv(f'{raw_dir}/object_fits_list.csv')
     obj_list = obj_list.groupby(['object']).apply(red_blue_filename_sep).reset_index()
     obj_list.to_csv(f'{raw_dir}/object_fits_list.csv', index=False)
     print("Done")
 
+    # Warning: Does not work well with duplicate object names in FITS headers
     print(f"Found {len(obj_list)} unique spectra.")
 
     return obj_list
