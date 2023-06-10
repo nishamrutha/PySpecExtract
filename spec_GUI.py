@@ -1,3 +1,16 @@
+#!/usr/bin/env python
+
+"""
+This module handles the GUI frontend of the PySpecExtract GUI designed
+ to extract and analyze spectra from PyWiFeS-reduced ANU 2.3m telescope data.
+ The code uses TkInter to graphically adjust parameters such as aperture size
+ and position for sky subtraction to quickly browse and extract
+ spectra from a large sample of .p11.fits files.
+"""
+
+#############
+#  Imports  #
+#############
 import os
 import sys
 from tkinter import *
@@ -8,14 +21,51 @@ import matplotlib
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.backends.backend_tkagg import NavigationToolbar2Tk
-import pandas as pd
 
 import spectra_extractor as se
 
 matplotlib.use('TkAgg')
 
+##############
+# Authorship #
+##############
+__author__ = "Neelesh Amrutha"
+__date__ = "10 June 2023"
+
+__license__ = "GPL-3.0"
+__version__ = "1.0"
+__maintainer__ = "Neelesh Amrutha"
+__email__ = "neelesh.amrutha<AT>anu.edu.au"
+
 
 class RawDirs:
+    """
+    Class representing a directory selection window.
+
+    Parameters:
+        root: TkInter root object for the GUI.
+
+    Attributes:
+        raw_dir: The selected raw file directory.
+        obj_list: The list of object and blue/red filepaths.
+        app: Instance of the MainWindow class for the main GUI window.
+        initial_dir: Initial directory path.
+        root: TkInter root object for the GUI.
+        raw_frame: Frame widget for the directory selection window.
+        raw_dir_log: Text widget for displaying log messages.
+        label_get_raw_dir: Label widget displaying a prompt to choose a directory.
+        default_color: Default color of the label_get_raw_dir text.
+
+        button_explore: Button widget to open the file explorer.
+        button_raw_dir_next: Button widget to continue to the next window.
+
+    Methods:
+        text_redirector: Redirects print statements to the GUI log.
+        raw_dir_next: Checks for valid object list file and proceeds to the next window.
+        read_raw_dir: Reads the .p11.fits files in the input directory
+                    and creates output directory structure.
+    """
+
     def __init__(self, root):
         self.raw_dir = None
         self.obj_list = None
@@ -72,19 +122,38 @@ class RawDirs:
         self.raw_dir = filedialog.askdirectory(initialdir=self.initial_dir,
                                                title="Select directory with reduced WiFeS cubes")
 
+        # Generate object_fits_list.csv
         self.obj_list = se.make_amalgamated_file(self.raw_dir)
+
         if len(self.obj_list) > 0:
             out_dir = f"{self.raw_dir}/out"
+
+            # Output directory structure
             for od in [out_dir, out_dir + "/WiFeS", out_dir + "/spec_plots", out_dir + "/spat_plots"]:
                 if not os.path.exists(od):
                     os.makedirs(od)
+            print(f"Output directory: {out_dir}/")
+        else:
+            print("No .p11.fits files found. Choose another directory.")
 
         self.initial_dir = self.raw_dir
         self.label_get_raw_dir['foreground'] = self.default_color
 
 
 class MainWindow:
+    """
+    Main window class for PySpecExtract GUI
+    """
+
     def __init__(self, root, raw_dir, obj_list):
+        """
+        Initialize the MainWindow class.
+
+        Parameters:
+            root (Tk): Root window object.
+            raw_dir (str): Top-level directory containing FITS files.
+            obj_list (pandas.DataFrame): Objects and corresponding blue/red filepaths.
+        """
         sys.stdout.write = self.text_redirector  # new print function
 
         # Directories
@@ -100,7 +169,7 @@ class MainWindow:
 
         # App root
         self.root = root
-        self.root.title("Spectrum Extractor")
+        self.root.title("PySpecExtract")
 
         # Track iteration
         self.counter = 0
@@ -184,7 +253,7 @@ class MainWindow:
         self.entry_r_sky = Entry(self.obj_sky_frame, textvariable=self.r_sky_var, width=5)
         self.btn_r_entry = Button(self.obj_sky_frame, text="Enter", command=self.enter_r_apt_sky)
 
-        # Pack buttons in order
+        # Pack buttons in order (using .pack instead of .grid was a bad idea)
         self.label_counter.pack(side=LEFT)
         self.btn_exit.pack(side=LEFT)
         self.btn_clr_log.pack(side=LEFT)
@@ -211,8 +280,9 @@ class MainWindow:
         self.log_frame.pack(fill=BOTH, side=RIGHT, expand=True)
         self.spatial_frame.pack()
 
-        # Miscellaneous
         print(f"Loaded {self.len_loaded} objects.")
+
+        # Bind RETURN key to aperture size command
         self.root.bind('<Return>', self.enter_r_apt_sky)
 
         # Get the SpecExtract object for the current object and show plots
@@ -239,6 +309,8 @@ class MainWindow:
 
     def run_spec(self, save=False):
         """ Generate spatial+spectral plot along with sky-subtracted data """
+
+        # Plot spatial image
         self.spat_fig = self.spec_object.plot_spatial(save=save, save_loc=self.spat_plot_dir)
         self.spat_fig.canvas.callbacks.connect('button_press_event', self.get_row_col_click)
         self.spat_canvas = FigureCanvasTkAgg(self.spat_fig, master=self.spatial_frame)
@@ -247,9 +319,11 @@ class MainWindow:
         self.spat_toolbar = NavigationToolbar2Tk(self.spat_canvas, self.spatial_frame)
         self.spat_toolbar.update()
 
+        # Generate spectrum
         self.spec_object.make_masks()
         self.spec_object.generate_spec(save_loc=self.spec_data_dir, save=save)
 
+        # Plot spectrum
         self.spec_fig = self.spec_object.plot_spec(save=save, save_loc=self.spec_plot_dir)
         self.spec_canvas = FigureCanvasTkAgg(self.spec_fig, master=self.spec_frame)
         self.spec_fig.canvas.draw()
@@ -257,6 +331,7 @@ class MainWindow:
         self.spec_toolbar = NavigationToolbar2Tk(self.spec_canvas, self.spec_frame)
         self.spec_toolbar.update()
 
+        # Pack images
         self.spat_plot_wid.pack(fill=BOTH, side=LEFT)
         self.spec_plot_wid.pack(fill=BOTH, side=LEFT)
 
@@ -302,7 +377,7 @@ class MainWindow:
                     self.update_spec_object()
                 else:
                     print("Select free sky aperture to choose sky region.")
-            else:
+            else:  # Object
                 self.col = int(event.xdata)
                 self.row = int(event.ydata)
                 print(f"Set new position for obj at {self.col}, {self.row}")
@@ -355,8 +430,9 @@ class MainWindow:
         self.spec_toolbar.destroy()
 
 
+# Start the application
 master = Tk()
-app = RawDirs(master)  # Run the app
+app = RawDirs(master)
 # app = MainWindow(master, "../Data/CLAGNPlotter/raw_wifes/",
 #                  pd.read_csv("../Data/CLAGNPlotter/raw_wifes/object_fits_list.csv"))  # Testing
 master.mainloop()
