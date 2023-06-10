@@ -7,3 +7,5 @@ Download `spec_GUI.py` and `spectra_extractor.py` in the same directory, and run
 ```
 python spec_GUI.py
 ```
+---------------
+TODO: update readme
