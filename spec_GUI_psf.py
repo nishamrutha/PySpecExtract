@@ -30,10 +30,10 @@ matplotlib.use('TkAgg')
 # Authorship #
 ##############
 __author__ = "Neelesh Amrutha"
-__date__ = "10 June 2023"
+__date__ = "03 December 2025"
 
 __license__ = "GPL-3.0"
-__version__ = "1.0"
+__version__ = "2.0"
 __maintainer__ = "Neelesh Amrutha"
 __email__ = "neelesh.amrutha<AT>anu.edu.au"
 

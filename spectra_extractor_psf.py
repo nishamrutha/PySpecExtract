@@ -9,6 +9,8 @@ This module defines a class called SpecExtract that facilitates the extraction
 
 This module is developed as a backend to the PySpecExtract GUI to easily select object
  and sky regions, but can be run independently in a python command line environment.
+
+Version 2.0 includes psf fitting.
 """
 
 #############
@@ -31,10 +33,10 @@ from mpl_toolkits.axes_grid1 import make_axes_locatable
 # Authorship #
 ##############
 __author__ = "Neelesh Amrutha"
-__date__ = "10 June 2023"
+__date__ = "03 December 2025"
 
 __license__ = "GPL-3.0"
-__version__ = "1.0"
+__version__ = "2.0"
 __maintainer__ = "Neelesh Amrutha"
 __email__ = "neelesh.amrutha<AT>anu.edu.au"
 
