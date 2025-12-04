@@ -18,7 +18,7 @@ Version 2.0 includes psf fitting.
 #############
 import glob
 import os
-from datetime import datetime
+# from datetime import datetime
 
 import matplotlib.dates as md
 import matplotlib.pyplot as plt
@@ -28,6 +28,7 @@ from astropy.io import fits
 from astropy.time import Time
 from matplotlib import rcParams
 from mpl_toolkits.axes_grid1 import make_axes_locatable
+from psf_fit import PsfFit
 
 ##############
 # Authorship #
@@ -87,7 +88,7 @@ rcParams['savefig.bbox'] = 'tight'
 ###############
 n_row, n_col = 35, 25  # WiFeS cube face dimensions, remove 3 from n_row for bad pixel rows
 sep = 5650  # WiFeS blue/red separation wavelength
-full_min, full_max = 3500, 9500  # WiFeS spectrum range (blue + red)
+full_min, full_max = 3800, 7800  # WiFeS spectrum range (blue + red)
 
 
 ############################################################################################
@@ -112,24 +113,19 @@ class SpecExtract:
         blue_head (Header): Header information for the blue side.
         wave_blue (ndarray): Wavelength values for the blue side.
         blue_ind (ndarray): Indices of the wavelength values within a desired range.
-        blue_img (ndarray): Median of the blue data along the spectral axis.
         red (ndarray): Extracted red data from the FITS file.
         red_e (ndarray): Extracted red error data from the FITS file.
         red_head (Header): Header information for the red side.
         wave_red (ndarray): Wavelength values for the red side.
         red_ind (ndarray): Indices of the wavelength values within a desired range.
-        red_img (ndarray): Median of the red data along the spectral axis.
         obs_red (str): Observation date of red image
         obs_blue (str): Observation date of blue image
         obs_mjd (float): Observation date in modified Julian date (MJD) (blue).
-        r (int): Aperture radius.
-        sky_aperture (str): Type of sky aperture ('disjoint' or 'annular').
         sky_r (int): Sky aperture radius.
         row (int): Aperture row position.
         col (int): Aperture column position.
         row_min (int): Sky row position.
         col_min (int): Sky column position.
-        mask: Aperture mask.
         mask_min: Sky mask.
         spec_wifes_raw: Extracted WiFeS spectrum.
         spec_wifes_err: Error in WiFeS spectrum (standard deviation).
@@ -157,7 +153,6 @@ class SpecExtract:
         self.blue_head = self.blue_hdu[0].header
         self.wave_blue = self.blue_head['CRVAL3'] + np.arange(len(self.blue)) * self.blue_head['CDELT3']
         self.blue_ind = np.ravel(np.argwhere((self.wave_blue > full_min) & (self.wave_blue <= sep)))
-        self.blue_img = np.nanmedian(self.blue, axis=0)
         self.img_type = self.blue_head['WIFESOBS']
         print(f"Observation type: {self.img_type}")
 
@@ -167,32 +162,42 @@ class SpecExtract:
         self.red_head = self.red_hdu[0].header
         self.wave_red = self.red_head['CRVAL3'] + np.arange(len(self.red)) * self.red_head['CDELT3']
         self.red_ind = np.ravel(np.argwhere((self.wave_red > sep) & (self.wave_red <= full_max)))
-        self.red_img = np.nanmedian(self.red, axis=0)
+
+        '''Splice'''
+        self.splice_cube = np.zeros((len(self.blue_ind) + len(self.red_ind), n_row, n_col))
+        self.splice_cube[0:len(self.blue_ind), :, :] = self.blue[self.blue_ind, :, :]
+        self.splice_cube[len(self.blue_ind):, :, :] = self.red[self.red_ind, :, :]
+        self.splice_err = np.zeros((len(self.blue_ind) + len(self.red_ind), n_row, n_col))
+        self.splice_err[0:len(self.blue_ind), :, :] = self.blue_e[self.blue_ind, :, :]
+        self.splice_err[len(self.blue_ind):, :, :] = self.red_e[self.red_ind, :, :]
+        self.wave_wifes = np.concatenate((self.wave_blue[self.blue_ind], self.wave_red[self.red_ind]))
+        self.splice_image = np.nanmedian(self.splice_cube, axis=0)
 
         # Observed dates
         self.obs_red = self.red_head['DATE-OBS']
         self.obs_blue = self.blue_head['DATE-OBS']
-        self.obs_mjd = dt2mjd(md.date2num(datetime.fromisoformat(self.blue_head['DATE-OBS'].split('T')[0])))
+        # self.obs_mjd = dt2mjd(md.date2num(datetime.fromisoformat(self.blue_head['DATE-OBS'].split('T')[0])))
+        self.obs_mjd = self.blue_head['MJD-OBS']
 
         # Aperture position
-        self.row = 16
-        self.col = 12
+        self.row = 10
+        self.col = 13
 
         # Sky
-        self.r = 2  # aperture radius
-        self.sky_aperture = 'disjoint'  # [disjoint, annular]
-        self.sky_r = 2  # sky aperture radius
+        self.sky_r = 3  # sky aperture radius
 
         # Disjoint sky position
         self.row_min = 30
         self.col_min = 12
 
         # Placeholders for masks and data arrays
-        self.mask = None
         self.mask_min = None
+        self.splice_cube_skysub = None
+        self.splice_err_skysub = None
         self.spec_wifes_raw = None
         self.spec_wifes_err = None
-        self.wave_wifes = None
+        self.psf_fit = None
+        self.model_type = 'gaussian'  # PSF model type
 
         # Set kwargs attributes
         for key, value in kwargs.items():
@@ -202,22 +207,12 @@ class SpecExtract:
         self.red_hdu.close()
         self.blue_hdu.close()
 
-    def make_masks(self):
+    def make_mask(self):
         """
-        Method to create aperture masks for the object and sky subtraction regions.
+        Method to create aperture mask for sky subtraction regions.
         """
-        # Aperture region mask
-        x, y = np.ogrid[-self.row:n_row - self.row, -self.col:n_col - self.col]
-        self.mask = x * x + y * y <= self.r ** 2
-
-        # Sky subtraction region mask
-        if self.sky_aperture == 'disjoint':  # Free
-            x, y = np.ogrid[-self.row_min:n_row - self.row_min, -self.col_min:n_col - self.col_min]
-            self.mask_min = x * x + y * y <= self.sky_r ** 2
-        elif self.sky_aperture == 'annular':  # Annular
-            self.mask_min = (x * x + y * y >= self.r ** 2) & (x * x + y * y <= (self.r + self.sky_r) ** 2)
-        else:
-            print("Choose sky aperture from [disjoint, annular]")
+        x, y = np.ogrid[-self.row_min:n_row - self.row_min, -self.col_min:n_col - self.col_min]
+        self.mask_min = x * x + y * y <= self.sky_r ** 2
 
     def generate_spec(self, save_loc="WiFeS_with_error/", save=True):
         """
@@ -226,63 +221,48 @@ class SpecExtract:
         :param save_loc: Location to save the FITS file.
         :param save: Boolean flag to indicate whether to save the FITS file or not.
         """
-        self.make_masks()  # generate aperture and sky mask
+        self.make_mask()  # generate aperture and sky mask
 
         # FITS header dictionary
         cat = {'object': self.obj_name,
                'data': "Intensity",
                'row': self.row + 3,  # de-offset bad rows when saving
                'col': self.col,
-               'apt_rad': self.r,
                'OBS_RED': self.obs_red,  # Save dates
                'OBS_BLUE': self.obs_blue,
                'OBS_MJD': self.obs_mjd,  # observed MJD
-               'sky_apt': self.sky_aperture}  # sky aperture type
-
-        # Sky aperture details in FITS header
-        if self.sky_aperture == 'disjoint':
-            cat['row_sky'] = self.row_min + 3  # de-offset bad rows when saving
-            cat['col_sky'] = self.col_min
-        elif self.sky_aperture == 'annular':
-            cat['row_sky'] = self.row + 3  # de-offset bad rows when saving
-            cat['col_sky'] = self.col
-        else:
-            print("Choose sky aperture from [disjoint, annular]")
-        cat['sky_rad'] = self.sky_r
+               'row_sky': self.row_min + 3,  # de-offset bad rows when saving
+               'col_sky': self.col_min,
+               'sky_rad': self.sky_r}
+        # TODO: Update to include PSF fitting parameters
 
         # Average of sky
-        blue_mean = np.mean(self.blue[:, self.mask_min], axis=1)
-        red_mean = np.mean(self.red[:, self.mask_min], axis=1)
+        # blue_mean = np.mean(self.blue[:, self.mask_min], axis=1)
+        # red_mean = np.mean(self.red[:, self.mask_min], axis=1)
+        #
+        # # Error in sky average (variance)
+        # blue_sky_sem = np.mean(self.blue_e[:, self.mask_min], axis=1) / np.sqrt(
+        #     self.blue_e[:, self.mask_min].shape[1])  # error
+        # red_sky_sem = np.mean(self.red_e[:, self.mask_min], axis=1) / np.sqrt(
+        #     self.red_e[:, self.mask_min].shape[1])  # error
 
-        # Error in sky average (variance)
-        blue_sky_sem = np.mean(self.blue_e[:, self.mask_min], axis=1) / np.sqrt(
-            self.blue_e[:, self.mask_min].shape[1])  # error
-        red_sky_sem = np.mean(self.red_e[:, self.mask_min], axis=1) / np.sqrt(
-            self.red_e[:, self.mask_min].shape[1])  # error
+        # Spliced sky
+        sky_mean = np.mean(self.splice_cube[:, self.mask_min], axis=1)
+        sky_error = np.mean(self.splice_err[:, self.mask_min], axis=1) / np.sqrt(
+            self.splice_err[:, self.mask_min].shape[1])
 
+        # Handle case of zero sky radius
         if self.sky_r == 0:
-            blue_sky_sem = np.zeros_like(blue_sky_sem)
-            red_sky_sem = np.zeros_like(red_sky_sem)
-            blue_mean = np.zeros_like(blue_mean)
-            red_mean = np.zeros_like(red_mean)
+            sky_mean = np.zeros_like(sky_mean)
+            sky_error = np.zeros_like(sky_error)
 
-        # Sum of aperture after sky subtraction
-        sqrt_n = np.sqrt(self.blue[:, self.mask].shape[1])
-        spec_blue = np.sum(self.blue[:, self.mask] - blue_mean[:, None], axis=1)
-        spec_red = np.sum(self.red[:, self.mask] - red_mean[:, None], axis=1)
+        # Sky subtracted cube
+        self.splice_cube_skysub = self.splice_cube - sky_mean[:, None, None]
+        self.splice_err_skysub = np.sqrt(self.splice_err + sky_error[:, None, None])
 
-        # Error in aperture after sky subtraction (standard deviation)
-        err_blue = np.sqrt(np.mean(self.blue_e[:, self.mask], axis=1)
-                           / np.sqrt(self.blue_e[:, self.mask].shape[1])
-                           + blue_sky_sem) * sqrt_n
-        err_red = np.sqrt(np.mean(self.red_e[:, self.mask], axis=1)
-                          / np.sqrt(self.red_e[:, self.mask].shape[1])
-                          + red_sky_sem) * sqrt_n  # subtraction error
-
-        # Join blue and red side
-        self.spec_wifes_raw = np.concatenate((spec_blue[self.blue_ind], spec_red[self.red_ind]))
-        self.spec_wifes_err = np.concatenate((err_blue[self.blue_ind], err_red[self.red_ind]))
-        self.wave_wifes = np.concatenate((self.wave_blue[self.blue_ind], self.wave_red[self.red_ind]))
+        self.psf_fit = PsfFit(self.splice_cube_skysub, self.splice_err_skysub, self.row, self.col, self.model_type)
+        self.spec_wifes_raw = self.psf_fit.extracted_spectrum
+        self.spec_wifes_err = self.psf_fit.extracted_error
 
         # Save MARZ-friendly FITS
         if save:
@@ -300,43 +280,22 @@ class SpecExtract:
         :param save_loc: Location to save the plot.
         :return: The figure object to display in the GUI.
         """
-        self.make_masks()
+        self.make_mask()
 
         # Circles to show aperture and sky on spatial image
-        circle1 = plt.Circle((self.col, self.row), self.r, color='r', fill=False)
-        circle2 = plt.Circle((self.col, self.row), self.r, color='r', fill=False)
-        if self.sky_aperture == 'annular':
-            circle3 = plt.Circle((self.col, self.row), self.r + self.sky_r, color='r', linestyle='--', fill=False)
-            circle4 = plt.Circle((self.col, self.row), self.r + self.sky_r, color='r', linestyle='--', fill=False)
-        else:
-            circle3 = plt.Circle((self.col_min, self.row_min), self.sky_r, color='r', linestyle='--', fill=False)
-            circle4 = plt.Circle((self.col_min, self.row_min), self.sky_r, color='r', linestyle='--', fill=False)
+        circle = plt.Circle((self.col_min, self.row_min), self.sky_r, color='r', linestyle='--', fill=False)
 
         # Mark central pixel
-        rect1 = plt.Rectangle((self.col - 0.5, self.row - 0.5), 1, 1, color='r', fill=False)
-        rect2 = plt.Rectangle((self.col - 0.5, self.row - 0.5), 1, 1, color='r', fill=False)
+        rect = plt.Rectangle((self.col - 0.5, self.row - 0.5), 1, 1, color='r', fill=False)
 
         ''' Blue '''
-        fig, [axb, axr] = plt.subplots(1, 2)
-        divider = make_axes_locatable(axb)
+        fig, ax_spat = plt.subplots(1, 1)
+        divider = make_axes_locatable(ax_spat)
         cax = divider.append_axes('right', size='5%', pad=0.05)
-        imb = axb.imshow(self.blue_img)  # 3 bad rows at edge not shown
+        imb = ax_spat.imshow(self.splice_image)  # 3 bad rows at edge not shown
         fig.colorbar(imb, cax=cax, orientation='vertical')
-        axb.set_title('Blue')
-        axb.add_patch(circle1)
-        axb.add_patch(circle3)
-        axb.add_patch(rect1)
-
-        ''' Red '''
-        divider = make_axes_locatable(axr)
-        cax = divider.append_axes('right', size='5%', pad=0.05)
-        imr = axr.imshow(self.red_img)  # 3 bad rows at edge not shown
-        fig.colorbar(imr, cax=cax, orientation='vertical')
-        axr.set_title('Red')
-        axr.add_patch(circle2)
-        axr.add_patch(circle4)
-        axr.add_patch(rect2)
-        plt.tight_layout()
+        ax_spat.add_patch(circle)
+        ax_spat.add_patch(rect)
 
         # Save
         if save:
@@ -360,12 +319,13 @@ class SpecExtract:
         fig, ax = plt.subplots(1, 1, figsize=(12.15, 3))
         ax.plot(self.wave_wifes, self.spec_wifes_raw, 'b-',
                 linewidth=0.75, label='WiFeS', zorder=2)
-        #ax.plot(self.wave_wifes, self.spec_wifes_err, 'r-',
-        #        linewidth=0.55, label='Error', zorder=3)
+        y_lim = ax.get_ylim()
 
         # Shade error
-        #ax.fill_between(self.wave_wifes, (self.spec_wifes_raw - e_wif), (self.spec_wifes_raw + e_wif),
-        #                alpha=0.3, facecolor='r')
+        ax.fill_between(self.wave_wifes, (self.spec_wifes_raw - e_wif), (self.spec_wifes_raw + e_wif),
+                        alpha=0.3, facecolor='r')
+
+        ax.set_ylim(y_lim)
 
         # Labels
         ax.set_xlabel(r'Wavelength ($\AA$)')
@@ -377,6 +337,74 @@ class SpecExtract:
         # Save
         if save:
             plt.savefig(f'{save_loc}/{self.obj_name}.pdf')
+
+        return fig
+
+    def plot_wavelength_profile(self, save=False, save_loc=f"out/wave_profiles/"):
+        """
+        :param save: Boolean flag to indicate whether to save the plot or not.
+        :param save_loc: Location to save the plot.
+        :return: The figure object to display in GUI.
+        """
+        fig, axs = plt.subplots(3, 1, figsize=(8, 7), sharex=True)
+
+        if self.psf_fit is None:
+            print("Spectrum has not been generated yet. Please run generate_spec() first.")
+            return fig
+
+        if self.model_type == 'gaussian':
+            arr = np.array([self.psf_fit.x0_arr, self.psf_fit.y0_arr,
+                            self.psf_fit.sx_arr, self.psf_fit.sy_arr, self.psf_fit.th_arr])
+
+            # convert sigma to FWHM
+            arr[2] = 2.3548 * arr[2]
+            arr[3] = 2.3548 * arr[3]
+            labs = ['xy', r'FWHM', r'$\theta$']
+            legs = [r'$x_0$', r'$y_0$', r'FWHM$_x$', r'FWHM$_y$', r'$\theta$']
+
+            axs[0].plot(self.wave_wifes, arr[0], 'b-', label=legs[0])
+            axs[0].set_ylabel(labs[0])
+            axs[0].grid()
+            axs[0].plot(self.wave_wifes, arr[1], 'r-', label=legs[1])
+            axs[0].legend()
+
+            axs[1].plot(self.wave_wifes, arr[2], 'b-', label=legs[2])
+            axs[1].set_ylabel(labs[1])
+            axs[1].grid()
+            axs[1].plot(self.wave_wifes, arr[3], 'r-', label=legs[3])
+            axs[1].legend()
+
+            axs[2].plot(self.wave_wifes, arr[4], 'b-', label=legs[4])
+            axs[2].set_ylabel(labs[2])
+            axs[2].grid()
+
+        elif self.model_type == 'moffat':
+            arr = np.array([self.psf_fit.x0_arr, self.psf_fit.y0_arr, self.psf_fit.ax_arr,
+                            self.psf_fit.ay_arr, self.psf_fit.be_arr, self.psf_fit.th_arr])
+            labs = ['xy', 'FWHM', r'$\beta$ - $\theta$']
+            legs = [r'$x_0$', r'$y_0$', r'FWHM$_x$', r'FWHM$_y$', r'$\beta$', r'$\theta$']
+
+            # convert to FWHM
+            arr[2] = 2.0 * arr[2] * np.sqrt(2.0 ** (1.0 / arr[4]) - 1.0)
+            arr[3] = 2.0 * arr[3] * np.sqrt(2.0 ** (1.0 / arr[4]) - 1.0)
+
+            if self.psf_fit is None:
+                print("Spectrum has not been generated yet. Please run generate_spec() first.")
+                return fig
+            for i in range(3):
+                axs[i].plot(self.wave_wifes, arr[2*i], 'b-', label=legs[2*i])
+                axs[i].set_ylabel(labs[i])
+                axs[i].grid()
+                axs[i].plot(self.wave_wifes, arr[2*i+1], 'r-', label=legs[2*i+1])
+                axs[i].legend()
+        else:
+            print("Unknown model type for PSF fitting.")
+            return fig
+
+        axs[-1].set_xlabel(r'Wavelength ($\mathrm{\AA}$)')
+        plt.tight_layout()
+        if save:
+            plt.savefig(f'{save_loc}/{self.obj_name}_wavelength_profile.pdf')
 
         return fig
 
@@ -476,12 +504,16 @@ def make_amalgamated_file(raw_dir, check_wifes=False):
 
     return obj_list
 
-# Testing
-# spec_extract = SpecExtract("g0209537-135321",
-#                            "../Data/CLAGNPlotter/raw_wifes/202211/T2m3wr-20221122.123045-0128.p11.fits",
-#                            "../Data/CLAGNPlotter/raw_wifes/202211/T2m3wb-20221122.123045-0128.p11.fits")
 
-# spec_extract.sky_aperture = 'annular'
-# spec_extract.plot_spatial(save=False).show()
-# spec_extract.generate_spec(save=False)
-# spec_extract.plot_spec(save=False).show()
+# Testing
+# spec_extract = SpecExtract("g1007504-090445",
+#                            "/Users/neelesh/Desktop/WiFeS_Raw/T2m3wr-20220526.085114-0337.p11.fits",
+#                            "/Users/neelesh/Desktop/WiFeS_Raw/T2m3wb-20220526.085114-0337.p11.fits")
+spec_extract = SpecExtract("1254564-265702",
+                           "/Users/neelesh/Desktop/WiFeS_Raw/T2m3wr-20220526.112847-0345.p11.fits",
+                           "/Users/neelesh/Desktop/WiFeS_Raw/T2m3wb-20220526.112848-0345.p11.fits")
+
+spec_extract.plot_spatial(save=False).show()
+spec_extract.generate_spec(save=False)
+spec_extract.plot_spec(save=False).show()
+spec_extract.plot_wavelength_profile(save=False).show()

@@ -22,7 +22,7 @@ import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.backends.backend_tkagg import NavigationToolbar2Tk
 
-import spectra_extractor as se
+import spectra_extractor_psf as se
 
 matplotlib.use('TkAgg')
 
@@ -161,6 +161,7 @@ class MainWindow:
         self.spat_plot_dir = raw_dir + "/out/spat_plots/"
         self.spec_plot_dir = raw_dir + "/out/spec_plots/"
         self.spec_data_dir = raw_dir + "/out/WiFeS/"
+        self.wave_prof_dir = raw_dir + "/out/WiFeS/wave_profiles/"
 
         # Object list
         self.obj_list = obj_list
