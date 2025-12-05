@@ -21,6 +21,7 @@ import matplotlib
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.backends.backend_tkagg import NavigationToolbar2Tk
+import pandas as pd
 
 import spectra_extractor_psf as se
 
@@ -129,15 +130,16 @@ class RawDirs:
             out_dir = f"{self.raw_dir}/out"
 
             # Output directory structure
-            for od in [out_dir, out_dir + "/WiFeS", out_dir + "/spec_plots", out_dir + "/spat_plots"]:
+            for od in [out_dir, out_dir + "/WiFeS", out_dir + "/spec_plots",
+                       out_dir + "/spat_plots", out_dir + "/wave_profiles", out_dir + "/psf_fits"]:
                 if not os.path.exists(od):
                     os.makedirs(od)
             print(f"Output directory: {out_dir}/")
+            self.label_get_raw_dir['foreground'] = self.default_color
         else:
             print("No .p11.fits files found. Choose another directory.")
 
         self.initial_dir = self.raw_dir
-        self.label_get_raw_dir['foreground'] = self.default_color
 
 
 class MainWindow:
@@ -162,6 +164,7 @@ class MainWindow:
         self.spec_plot_dir = raw_dir + "/out/spec_plots/"
         self.spec_data_dir = raw_dir + "/out/WiFeS/"
         self.wave_prof_dir = raw_dir + "/out/WiFeS/wave_profiles/"
+        self.psf_check_dir = raw_dir + "/out/WiFeS/psf_fits/"
 
         # Object list
         self.obj_list = obj_list
@@ -288,7 +291,7 @@ class MainWindow:
 
         # Get the SpecExtract object for the current object and show plots
         self.spec_object = self.get_new_spec_object()
-        self.run_spec(save=False)
+        self.run_spec(save=False, init=True)
 
     def opt_select_cmd(self, choice):
         """ Option menu selector """
@@ -308,7 +311,7 @@ class MainWindow:
         """ Clear the log """
         self.raw_dir_log.delete(1.0, END)
 
-    def run_spec(self, save=False):
+    def run_spec(self, save=False, init=False):
         """ Generate spatial+spectral plot along with sky-subtracted data """
 
         # Plot spatial image
@@ -321,8 +324,8 @@ class MainWindow:
         self.spat_toolbar.update()
 
         # Generate spectrum
-        self.spec_object.make_masks()
-        self.spec_object.generate_spec(save_loc=self.spec_data_dir, save=save)
+        self.spec_object.make_mask()
+        self.spec_object.generate_spec(save_loc=self.spec_data_dir, save=save, init=init)
 
         # Plot spectrum
         self.spec_fig = self.spec_object.plot_spec(save=save, save_loc=self.spec_plot_dir)
@@ -353,7 +356,7 @@ class MainWindow:
             self.current_row = self.obj_list[self.obj_list['object'] == self.name_list[self.counter]].iloc[0]
             self.reset_plots()
             self.spec_object = self.get_new_spec_object()
-            self.run_spec()
+            self.run_spec(init=True)
 
     def back_cmd(self):
         """ Go back in the object list by one step """
@@ -433,7 +436,7 @@ class MainWindow:
 
 # Start the application
 master = Tk()
-app = RawDirs(master)
-# app = MainWindow(master, "../Data/CLAGNPlotter/raw_wifes/",
-#                  pd.read_csv("../Data/CLAGNPlotter/raw_wifes/object_fits_list.csv"))  # Testing
+# app = RawDirs(master)
+app = MainWindow(master, "/Users/neelesh/Desktop/WiFeS_Raw",
+                 pd.read_csv("/Users/neelesh/Desktop/WiFeS_Raw/object_fits_list.csv"))  # Testing
 master.mainloop()

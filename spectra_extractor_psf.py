@@ -18,14 +18,13 @@ Version 2.0 includes psf fitting.
 #############
 import glob
 import os
-# from datetime import datetime
 
-import matplotlib.dates as md
+# import matplotlib.dates as md
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from astropy.io import fits
-from astropy.time import Time
+# from astropy.time import Time
 from matplotlib import rcParams
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from psf_fit import PsfFit
@@ -86,7 +85,8 @@ rcParams['savefig.bbox'] = 'tight'
 ###############
 #  Constants  #
 ###############
-n_row, n_col = 35, 25  # WiFeS cube face dimensions, remove 3 from n_row for bad pixel rows
+edge_trim = 3  # remove edge from n_row for bad pixel rows in WiFeS
+n_row, n_col = 38 - edge_trim, 25  # WiFeS cube face dimensions
 sep = 5650  # WiFeS blue/red separation wavelength
 full_min, full_max = 3800, 7800  # WiFeS spectrum range (blue + red)
 
@@ -132,7 +132,7 @@ class SpecExtract:
         wave_wifes: Wavelength values for WiFeS spectrum.
 
     Methods:
-        make_masks: Create aperture masks for object and sky subtraction regions.
+        make_mask: Create aperture masks for object and sky subtraction regions.
         generate_spec: Generate the spectrum and save it as a FITS file.
         plot_spatial: Plot the spatial image marking aperture and sky regions.
         plot_spec: Plot the spectrum with standard deviation error.
@@ -148,8 +148,8 @@ class SpecExtract:
         self.blue_hdu = fits.open(blue_f)
 
         ''' Blue '''
-        self.blue = self.blue_hdu[0].data[:, 3:, :]  # Remove bad pixel rows
-        self.blue_e = self.blue_hdu[1].data[:, 3:, :]
+        self.blue = self.blue_hdu[0].data[:, edge_trim:, :]  # Remove bad pixel rows
+        self.blue_e = self.blue_hdu[1].data[:, edge_trim:, :]
         self.blue_head = self.blue_hdu[0].header
         self.wave_blue = self.blue_head['CRVAL3'] + np.arange(len(self.blue)) * self.blue_head['CDELT3']
         self.blue_ind = np.ravel(np.argwhere((self.wave_blue > full_min) & (self.wave_blue <= sep)))
@@ -157,8 +157,8 @@ class SpecExtract:
         print(f"Observation type: {self.img_type}")
 
         ''' Red '''
-        self.red = self.red_hdu[0].data[:, 3:, :]  # Remove bad pixel rows
-        self.red_e = self.red_hdu[1].data[:, 3:, :]
+        self.red = self.red_hdu[0].data[:, edge_trim:, :]  # Remove bad pixel rows
+        self.red_e = self.red_hdu[1].data[:, edge_trim:, :]
         self.red_head = self.red_hdu[0].header
         self.wave_red = self.red_head['CRVAL3'] + np.arange(len(self.red)) * self.red_head['CDELT3']
         self.red_ind = np.ravel(np.argwhere((self.wave_red > sep) & (self.wave_red <= full_max)))
@@ -176,12 +176,11 @@ class SpecExtract:
         # Observed dates
         self.obs_red = self.red_head['DATE-OBS']
         self.obs_blue = self.blue_head['DATE-OBS']
-        # self.obs_mjd = dt2mjd(md.date2num(datetime.fromisoformat(self.blue_head['DATE-OBS'].split('T')[0])))
         self.obs_mjd = self.blue_head['MJD-OBS']
 
         # Aperture position
         self.row = 10
-        self.col = 13
+        self.col = 12
 
         # Sky
         self.sky_r = 3  # sky aperture radius
@@ -197,11 +196,21 @@ class SpecExtract:
         self.spec_wifes_raw = None
         self.spec_wifes_err = None
         self.psf_fit = None
-        self.model_type = 'gaussian'  # PSF model type
+        self.model_type = 'moffat'  # PSF model type
 
         # Set kwargs attributes
         for key, value in kwargs.items():
             setattr(self, key, value)
+
+        if self.model_type == 'moffat':
+            self.psf_labs = ['_amp', '_x0', '_y0', '_ax', '_ay', '_bet', 'thet', 'ofst']
+            self.psf_keys = ['amp', 'x0', 'y0', 'alpha_x', 'alpha_y', 'beta', 'theta', 'offset']
+        elif self.model_type == 'gaussian':
+            self.psf_labs = ['_amp', '_x0', '_y0', '_sx', '_sy', 'thet', 'ofst']
+            self.psf_keys = ['amp', 'x0', 'y0', 'sigma_x', 'sigma_y', 'theta', 'offset']
+        else:
+            self.psf_labs = []
+            self.psf_keys = []
 
         # Close FITS
         self.red_hdu.close()
@@ -214,62 +223,94 @@ class SpecExtract:
         x, y = np.ogrid[-self.row_min:n_row - self.row_min, -self.col_min:n_col - self.col_min]
         self.mask_min = x * x + y * y <= self.sky_r ** 2
 
-    def generate_spec(self, save_loc="WiFeS_with_error/", save=True):
+    def generate_spec(self, save_loc="WiFeS_with_error/", save=True, init=False):
         """
         Method to generate the spectrum and save it as a FITS file.
 
         :param save_loc: Location to save the FITS file.
         :param save: Boolean flag to indicate whether to save the FITS file or not.
+        :param init: Do not fit psf in first instance
         """
         self.make_mask()  # generate aperture and sky mask
 
-        # FITS header dictionary
-        cat = {'object': self.obj_name,
-               'data': "Intensity",
-               'row': self.row + 3,  # de-offset bad rows when saving
-               'col': self.col,
-               'OBS_RED': self.obs_red,  # Save dates
-               'OBS_BLUE': self.obs_blue,
-               'OBS_MJD': self.obs_mjd,  # observed MJD
-               'row_sky': self.row_min + 3,  # de-offset bad rows when saving
-               'col_sky': self.col_min,
-               'sky_rad': self.sky_r}
-        # TODO: Update to include PSF fitting parameters
+        if init:
+            # Spliced sky
+            sky_mean = np.mean(self.splice_cube[:, self.mask_min], axis=1)
+            sky_error = np.mean(self.splice_err[:, self.mask_min], axis=1) / np.sqrt(
+                self.splice_err[:, self.mask_min].shape[1])
 
-        # Average of sky
-        # blue_mean = np.mean(self.blue[:, self.mask_min], axis=1)
-        # red_mean = np.mean(self.red[:, self.mask_min], axis=1)
-        #
-        # # Error in sky average (variance)
-        # blue_sky_sem = np.mean(self.blue_e[:, self.mask_min], axis=1) / np.sqrt(
-        #     self.blue_e[:, self.mask_min].shape[1])  # error
-        # red_sky_sem = np.mean(self.red_e[:, self.mask_min], axis=1) / np.sqrt(
-        #     self.red_e[:, self.mask_min].shape[1])  # error
+            # Handle case of zero sky radius
+            if self.sky_r == 0:
+                sky_mean = np.zeros_like(sky_mean)
+                sky_error = np.zeros_like(sky_error)
 
-        # Spliced sky
-        sky_mean = np.mean(self.splice_cube[:, self.mask_min], axis=1)
-        sky_error = np.mean(self.splice_err[:, self.mask_min], axis=1) / np.sqrt(
-            self.splice_err[:, self.mask_min].shape[1])
+            # Sky subtracted cube
+            self.splice_cube_skysub = self.splice_cube - sky_mean[:, None, None]
+            self.splice_err_skysub = np.sqrt(self.splice_err + sky_error[:, None, None])
 
-        # Handle case of zero sky radius
-        if self.sky_r == 0:
-            sky_mean = np.zeros_like(sky_mean)
-            sky_error = np.zeros_like(sky_error)
+            # Extract from one pixel
+            self.spec_wifes_raw = self.splice_cube_skysub[:, self.row, self.col]
+            self.spec_wifes_err = self.splice_err_skysub[:, self.row, self.col]
+        else:
+            # Spliced sky
+            sky_mean = np.mean(self.splice_cube[:, self.mask_min], axis=1)
+            sky_error = np.mean(self.splice_err[:, self.mask_min], axis=1) / np.sqrt(
+                self.splice_err[:, self.mask_min].shape[1])
 
-        # Sky subtracted cube
-        self.splice_cube_skysub = self.splice_cube - sky_mean[:, None, None]
-        self.splice_err_skysub = np.sqrt(self.splice_err + sky_error[:, None, None])
+            # Handle case of zero sky radius
+            if self.sky_r == 0:
+                sky_mean = np.zeros_like(sky_mean)
+                sky_error = np.zeros_like(sky_error)
 
-        self.psf_fit = PsfFit(self.splice_cube_skysub, self.splice_err_skysub, self.row, self.col, self.model_type)
-        self.spec_wifes_raw = self.psf_fit.extracted_spectrum
-        self.spec_wifes_err = self.psf_fit.extracted_error
+            # Sky subtracted cube
+            self.splice_cube_skysub = self.splice_cube - sky_mean[:, None, None]
+            self.splice_err_skysub = self.splice_err + sky_error[:, None, None]
+
+            self.psf_fit = PsfFit(self.splice_cube_skysub, self.splice_err_skysub, self.row, self.col, self.model_type)
+            self.spec_wifes_raw = self.psf_fit.extracted_spectrum
+            self.spec_wifes_err = self.psf_fit.extracted_error
+            print(self.spec_wifes_err)
 
         # Save MARZ-friendly FITS
         if save:
+            # FITS header dictionary
+            cat = {'OBJECT': self.obj_name,
+                   'RA': self.red_head['RA'],
+                   'DEC': self.red_head['DEC'],
+                   'EXPTIME': self.red_head['EXPTIME'],
+                   'AIRMASS': self.red_head['AIRMASS'],
+                   'IMAGETYP': self.img_type,
+                   'GRATINGR': self.red_head['GRATINGR'],
+                   'GRATINGB': self.blue_head['GRATINGB'],
+                   'BEAMSPLT': self.red_head['BEAMSPLT'],
+                   'APTWHEEL': self.red_head['APTWHEEL'],
+                   'DATA': "INTENSITY",
+                   'DAT_UNIT': "erg s^-1 cm^-2 Angstrom^-1",
+                   'OBS_RED': self.obs_red,  # Save dates
+                   'OBS_BLUE': self.obs_blue,
+                   'OBS_MJD': self.obs_mjd,  # observed MJD
+                   'row_sky': self.row_min + edge_trim,  # de-offset bad rows when saving
+                   'col_sky': self.col_min,
+                   'sky_rad': self.sky_r,
+                   'PSF_MOD': self.model_type
+                   }
+
+            # Additional PSF fitting parameters to header
+            for i in range(len(self.psf_fit.fit_results)):
+                pars = self.psf_fit.fit_results[i]['params']
+                errs = self.psf_fit.fit_results[i]['errors']
+                for j in range(len(self.psf_keys)):
+                    key = self.psf_keys[j]
+                    lab = self.psf_labs[j]
+                    cat[f'PSF{i}{lab}'] = pars[key] + edge_trim if key == 'y0' else pars[key]
+                    cat[f'ERR{i}{lab}'] = errs[key + '_err']
+
             hdu = fits.PrimaryHDU(self.spec_wifes_raw)  # intensity array in primary
             hdu.header.update(cat)  # append object details dict to header
             hdu1 = fits.ImageHDU(self.wave_wifes, name='wavelength')  # wavelength array in image extension
+            hdu1.header.update({'Unit': 'angstrom'})  # wavelength unit
             hdu2 = fits.ImageHDU(self.spec_wifes_err, name='int_err')  # intensity error
+            hdu2.header.update({'Error': '1 sigma', 'Unit': 'erg s^-1 cm^-2 Angstrom^-1'})  # intensity error unit
             fits.HDUList([hdu, hdu1, hdu2]).writeto(f'{save_loc}/{self.obj_name}.fits', overwrite=True)  # write
 
     def plot_spatial(self, save=False, save_loc='spat_plots/'):
@@ -292,7 +333,7 @@ class SpecExtract:
         fig, ax_spat = plt.subplots(1, 1)
         divider = make_axes_locatable(ax_spat)
         cax = divider.append_axes('right', size='5%', pad=0.05)
-        imb = ax_spat.imshow(self.splice_image)  # 3 bad rows at edge not shown
+        imb = ax_spat.imshow(self.splice_image)  # edge bad rows at edge not shown
         fig.colorbar(imb, cax=cax, orientation='vertical')
         ax_spat.add_patch(circle)
         ax_spat.add_patch(rect)
@@ -350,7 +391,6 @@ class SpecExtract:
 
         if self.psf_fit is None:
             print("Spectrum has not been generated yet. Please run generate_spec() first.")
-            return fig
 
         if self.model_type == 'gaussian':
             arr = np.array([self.psf_fit.x0_arr, self.psf_fit.y0_arr,
@@ -390,7 +430,6 @@ class SpecExtract:
 
             if self.psf_fit is None:
                 print("Spectrum has not been generated yet. Please run generate_spec() first.")
-                return fig
             for i in range(3):
                 axs[i].plot(self.wave_wifes, arr[2*i], 'b-', label=legs[2*i])
                 axs[i].set_ylabel(labs[i])
@@ -399,22 +438,22 @@ class SpecExtract:
                 axs[i].legend()
         else:
             print("Unknown model type for PSF fitting.")
-            return fig
 
         axs[-1].set_xlabel(r'Wavelength ($\mathrm{\AA}$)')
         plt.tight_layout()
         if save:
-            plt.savefig(f'{save_loc}/{self.obj_name}_wavelength_profile.pdf')
+            plt.savefig(f'{save_loc}/{self.obj_name}.pdf')
 
-        return fig
+        plt.close()
+        self.psf_fit.make_model_evaluation_plot(save='out/psf_fits')
 
 
-def dt2mjd(dt):
-    """Matplotlib datetime to MJD"""
-    dt = md.num2date(dt)
-    x = Time(dt, format='datetime')
-    x = x.to_value('mjd', 'float')
-    return x
+# def dt2mjd(dt):
+#     """Matplotlib datetime to MJD"""
+#     dt = md.num2date(dt)
+#     x = Time(dt, format='datetime')
+#     x = x.to_value('mjd', 'float')
+#     return x
 
 
 def red_blue_filename_sep(obj):
@@ -426,7 +465,7 @@ def red_blue_filename_sep(obj):
     :param obj: Dataframe containing only one object.
     :return: the obj dataframe condensed into a single Series object.
     """
-    result = {}
+    result = {'object': obj['object'].values[0]}
     for fn in obj['file']:
         # Get file name
         fits_name = os.path.basename(fn)
@@ -457,11 +496,11 @@ def red_blue_filename_sep(obj):
         else:
             print("Could not read file: " + fits_name)
     return pd.Series(result,
-                     index=["blue", "red"],
+                     index=["object", "blue", "red"],
                      dtype="object")
 
 
-def make_amalgamated_file(raw_dir, check_wifes=False):
+def make_amalgamated_file(raw_dir, check_wifes=True):
     """
     Read directory containing FITS files, or subdirectories containing FITS files
     and save object_fits_list.csv file listing object and blue/red p11 FITS file paths
@@ -473,6 +512,7 @@ def make_amalgamated_file(raw_dir, check_wifes=False):
     # Read .p11.fits files in the directory or subdirectories
     if check_wifes:
         raw_file_list = glob.glob(f"{raw_dir}/**/*.p11.fits", recursive=True)
+        raw_file_list.extend(glob.glob(f"{raw_dir}/**/*.cube.fits", recursive=True))
     else:
         raw_file_list = glob.glob(f"{raw_dir}/**/*.fits", recursive=True)
     print(f"Found {len(raw_file_list)} files.")
@@ -480,7 +520,7 @@ def make_amalgamated_file(raw_dir, check_wifes=False):
     # Generate object - file relation
     print(f"Generating {raw_dir}/object_fits_list.csv...")
     with (open(f'{raw_dir}/object_fits_list.csv', 'w') as obj_list):
-        obj_list.write('file,object\n')  # Column names
+        obj_list.write('file,object,id\n')  # Column names
         for f in raw_file_list:
             fits_name = os.path.basename(f)
             if fits_name.startswith("T2m3w") or fits_name.startswith("OBK") or \
@@ -488,18 +528,33 @@ def make_amalgamated_file(raw_dir, check_wifes=False):
                 with fits.open(f) as hdu_l:
                     hdr = hdu_l[0].header
                     obj = hdr['OBJECT']
-                    obj_list.write(f"{f},{obj}\n")
+                    ra = hdr['RA']
+                    dec = hdr['DEC']
+                    mjd = hdr['MJD-OBS']
+                    # unique identifier for object
+                    id_unique = f"{obj}_{ra}_{dec}_{mjd:.4f}"
+                    obj_list.write(f"{f},{obj},{id_unique}\n")
     print("Done")
 
     # Group file - object relation based on object and separate blue/red file paths
     print(f"Condensing {raw_dir}/object_fits_list.csv...")
     obj_list = pd.read_csv(f'{raw_dir}/object_fits_list.csv')
-    obj_list = obj_list.groupby(['object'], as_index=False).apply(red_blue_filename_sep).reset_index(drop=True)
+
+    # Group by unique id and separate blue/red files
+    obj_list = obj_list.groupby(['id'],
+                                as_index=False).apply(red_blue_filename_sep,
+                                                      include_groups=False).reset_index(drop=True)
+
+    # Number duplicates
+    n = obj_list.groupby("object").cumcount()
+    obj_list["object"] = obj_list["object"] + np.where(n == 0, "", "_" + (n + 1).astype(str))
+
+    # Sort
+    obj_list = obj_list.sort_values(by='id').reset_index(drop=True)
+
+    # Save condensed list
     obj_list.to_csv(f'{raw_dir}/object_fits_list.csv', index=False)
     print("Done")
-
-    # Warning: Does not work well with duplicate object names in FITS headers,
-    # manually generate raw_dir/object_fits_list.csv to bypass duplicates.
     print(f"Found {len(obj_list)} unique spectra.")
 
     return obj_list
@@ -509,11 +564,13 @@ def make_amalgamated_file(raw_dir, check_wifes=False):
 # spec_extract = SpecExtract("g1007504-090445",
 #                            "/Users/neelesh/Desktop/WiFeS_Raw/T2m3wr-20220526.085114-0337.p11.fits",
 #                            "/Users/neelesh/Desktop/WiFeS_Raw/T2m3wb-20220526.085114-0337.p11.fits")
-spec_extract = SpecExtract("1254564-265702",
-                           "/Users/neelesh/Desktop/WiFeS_Raw/T2m3wr-20220526.112847-0345.p11.fits",
-                           "/Users/neelesh/Desktop/WiFeS_Raw/T2m3wb-20220526.112848-0345.p11.fits")
+# spec_extract = SpecExtract("1254564-265702",
+#                            "/Users/neelesh/Desktop/WiFeS_Raw/T2m3wr-20220526.112847-0345.p11.fits",
+#                            "/Users/neelesh/Desktop/WiFeS_Raw/T2m3wb-20220526.112848-0345.p11.fits")
 
-spec_extract.plot_spatial(save=False).show()
-spec_extract.generate_spec(save=False)
-spec_extract.plot_spec(save=False).show()
-spec_extract.plot_wavelength_profile(save=False).show()
+# make_amalgamated_file("/Users/neelesh/Desktop/WiFeS_Raw", check_wifes=True)
+
+# spec_extract.plot_spatial(save=False).show()
+# spec_extract.generate_spec(save=False)
+# spec_extract.plot_spec(save=False).show()
+# spec_extract.plot_wavelength_profile(save=False).show()

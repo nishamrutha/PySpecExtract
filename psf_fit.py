@@ -406,7 +406,7 @@ class PsfFit:
 
         # Scale for easier fitting
         self.flux *= norm_factor
-        self.error *= norm_factor
+        self.error *= norm_factor**2
 
         # Initial guess for PSF center
         self.init_row = init_row
@@ -462,8 +462,6 @@ class PsfFit:
 
         else:
             raise ValueError("Unknown model_type. Choose 'gaussian' or 'moffat'.")
-
-        self.make_model_evaluation_plot()
 
     def fit_psf(self):
         fit_results = []
@@ -556,7 +554,16 @@ class PsfFit:
             xr = cos_t * (xx - x0) + sin_t * (yy - y0)
             yr = -sin_t * (xx - x0) + cos_t * (yy - y0)
 
-            P = np.exp(-0.5 * ((xr / sx) ** 2 + (yr / sy) ** 2))
+            P = (1 / (2 * np.pi * sx * sy)) * np.exp(-0.5 * ((xr / sx) ** 2 + (yr / sy) ** 2))
+
+            # P = np.exp(-0.5 * ((xr / sx) ** 2 + (yr / sy) ** 2))
+            # normalize PSF
+            # P_sum = np.nansum(P)
+            # if P_sum <= 0:
+            #     self.extracted_spectrum[i] = np.nan
+            #     self.extracted_error[i] = np.nan
+            #     continue
+            # P = P / P_sum  # discrete normalization
 
             # valid variance mask
             mask = np.isfinite(D) & np.isfinite(V) & (V > 0)
@@ -629,7 +636,10 @@ class PsfFit:
 
             # analytic norm (continuous integral) for elliptical moffat:
             integral = moffat_normalisation(alpha_x, alpha_y, beta)
-            if not np.isfinite(integral) or integral == 0:
+
+            if np.isfinite(integral) and integral > 0:
+                P = M / integral  # continuous normalization (sum(P) ~ 1)
+            else:
                 # fallback: normalize by discrete sum
                 P_raw = M
                 P_sum = np.nansum(P_raw)
@@ -638,8 +648,7 @@ class PsfFit:
                     self.extracted_error[i] = np.nan
                     continue
                 P = P_raw / P_sum
-            else:
-                P = M / integral  # continuous normalization (sum(P) ~ 1)
+                print(f"Warning: Moffat PSF normalisation fallback to discrete sum, idx={i}")
 
             mask = np.isfinite(D) & np.isfinite(V) & (V > 0)
             if np.sum(mask) < 5:
@@ -662,7 +671,7 @@ class PsfFit:
             self.extracted_spectrum[i] = numerator / denominator
             self.extracted_error[i] = 1.0 / np.sqrt(denominator)
 
-    def make_model_evaluation_plot(self):
+    def make_model_evaluation_plot(self, save=None):
         """
         Make diagnostic plot of PSF model parameters vs wavelength bin centers.
         """
@@ -695,7 +704,7 @@ class PsfFit:
                 plt.colorbar(im, ax=axes[i, 0], fraction=0.046, pad=0.04)
                 im = axes[i, 1].imshow(models[i], origin='lower', cmap='viridis')
                 plt.colorbar(im, ax=axes[i, 1], fraction=0.046, pad=0.04)
-                im = axes[i, 2].imshow(residuals[i], origin='lower', cmap='bwr', vmin=-5, vmax=5)
+                im = axes[i, 2].imshow(residuals[i], origin='lower', cmap='bwr', vmin=-3, vmax=3)
                 plt.colorbar(im, ax=axes[i, 2], fraction=0.046, pad=0.04)
 
         elif self.model_type == 'moffat':
@@ -723,14 +732,13 @@ class PsfFit:
                 residuals.append(resid_norm)
             for i in range(8):
                 im = axes[i, 0].imshow(data[i], origin='lower', cmap='viridis')
-                plt.colorbar(im, ax=axes[i, 0], fraction=0.046, pad=0.04)
+                plt.colorbar(im, ax=axes[i, 0], fraction=0.046*35/25, pad=0.04)
+                c_lim = im.get_clim()
                 im = axes[i, 1].imshow(models[i], origin='lower', cmap='viridis')
-                plt.colorbar(im, ax=axes[i, 1], fraction=0.046, pad=0.04)
-                im = axes[i, 2].imshow(residuals[i], origin='lower', cmap='bwr', vmin=-5, vmax=5)
-                plt.colorbar(im, ax=axes[i, 2], fraction=0.046, pad=0.04)
-
-
-
+                im.set_clim(c_lim)
+                plt.colorbar(im, ax=axes[i, 1], fraction=0.046*35/25, pad=0.04)
+                im = axes[i, 2].imshow(residuals[i], origin='lower', cmap='bwr', vmin=-3, vmax=3)
+                plt.colorbar(im, ax=axes[i, 2], fraction=0.046*35/25, pad=0.04)
         else:
             raise ValueError("Unknown model_type. Choose 'gaussian' or 'moffat'.")
 
@@ -738,7 +746,7 @@ class PsfFit:
         axes[0, 1].set_title('PSF Model')
         axes[0, 2].set_title('Residual/sigma')
         plt.tight_layout()
-        plt.savefig('/Users/neelesh/Desktop/WiFeS_Raw/comparison.pdf')
-        plt.show()
+        if save:
+            plt.savefig(save)
 
-
+        plt.close()
