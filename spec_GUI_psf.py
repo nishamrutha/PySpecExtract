@@ -163,8 +163,8 @@ class MainWindow:
         self.spat_plot_dir = raw_dir + "/out/spat_plots/"
         self.spec_plot_dir = raw_dir + "/out/spec_plots/"
         self.spec_data_dir = raw_dir + "/out/WiFeS/"
-        self.wave_prof_dir = raw_dir + "/out/WiFeS/wave_profiles/"
-        self.psf_check_dir = raw_dir + "/out/WiFeS/psf_fits/"
+        self.wave_prof_dir = raw_dir + "/out/wave_profiles/"
+        self.psf_check_dir = raw_dir + "/out/psf_fits/"
 
         # Object list
         self.obj_list = obj_list
@@ -238,21 +238,21 @@ class MainWindow:
         self.radio_sky = Radiobutton(self.obj_sky_frame, text="Sky", variable=self.click_choice, value='sky')
 
         # Radio buttons to toggle sky aperture
-        self.sky_choice = StringVar(self.obj_sky_frame, self.sky_aperture)
-        self.label_sky_select = Label(self.obj_sky_frame,
-                                      text="Sky type: ")
-        self.radio_sky_free = Radiobutton(self.obj_sky_frame,
-                                          text="Free", variable=self.sky_choice, value='disjoint',
-                                          command=self.change_sky_aperture)
-        self.radio_sky_ann = Radiobutton(self.obj_sky_frame,
-                                         text="Annular", variable=self.sky_choice, value='annular',
-                                         command=self.change_sky_aperture)
+        # self.sky_choice = StringVar(self.obj_sky_frame, self.sky_aperture)
+        # self.label_sky_select = Label(self.obj_sky_frame,
+        #                               text="Sky type: ")
+        # self.radio_sky_free = Radiobutton(self.obj_sky_frame,
+        #                                   text="Free", variable=self.sky_choice, value='disjoint',
+        #                                   command=self.change_sky_aperture)
+        # self.radio_sky_ann = Radiobutton(self.obj_sky_frame,
+        #                                  text="Annular", variable=self.sky_choice, value='annular',
+        #                                  command=self.change_sky_aperture)
 
         # Entry box to set object and sky aperture size
-        self.r_apt_var = DoubleVar(self.obj_sky_frame, self.r)
+        # self.r_apt_var = DoubleVar(self.obj_sky_frame, self.r)
         self.r_sky_var = DoubleVar(self.obj_sky_frame, self.sky_r)
-        self.label_r_apt = Label(self.obj_sky_frame, text="Aperture R:")
-        self.entry_r_apt = Entry(self.obj_sky_frame, textvariable=self.r_apt_var, width=5)
+        # self.label_r_apt = Label(self.obj_sky_frame, text="Aperture R:")
+        # self.entry_r_apt = Entry(self.obj_sky_frame, textvariable=self.r_apt_var, width=5)
         self.label_r_sky = Label(self.obj_sky_frame, text="Sky R/width:")
         self.entry_r_sky = Entry(self.obj_sky_frame, textvariable=self.r_sky_var, width=5)
         self.btn_r_entry = Button(self.obj_sky_frame, text="Enter", command=self.enter_r_apt_sky)
@@ -268,11 +268,11 @@ class MainWindow:
         self.label_click_select.pack(side=LEFT)
         self.radio_obj.pack(side=LEFT)
         self.radio_sky.pack(side=LEFT)
-        self.label_sky_select.pack(side=LEFT, padx=(30, 1))
-        self.radio_sky_ann.pack(side=LEFT)
-        self.radio_sky_free.pack(side=LEFT)
-        self.label_r_apt.pack(side=LEFT, padx=(30, 1))
-        self.entry_r_apt.pack(side=LEFT)
+        # self.label_sky_select.pack(side=LEFT, padx=(30, 1))
+        # self.radio_sky_ann.pack(side=LEFT)
+        # self.radio_sky_free.pack(side=LEFT)
+        # self.label_r_apt.pack(side=LEFT, padx=(30, 1))
+        # self.entry_r_apt.pack(side=LEFT)
         self.label_r_sky.pack(side=LEFT, padx=(10, 1))
         self.entry_r_sky.pack(side=LEFT)
         self.btn_r_entry.pack(side=LEFT)
@@ -335,6 +335,11 @@ class MainWindow:
         self.spec_toolbar = NavigationToolbar2Tk(self.spec_canvas, self.spec_frame)
         self.spec_toolbar.update()
 
+        # Save diagnostic spectra
+        if save:
+            self.spec_object.plot_wavelength_profile(save=save, save_loc=self.wave_prof_dir)
+            self.spec_object.plot_model_evaluation(save_loc=self.psf_check_dir)
+
         # Pack images
         self.spat_plot_wid.pack(fill=BOTH, side=LEFT)
         self.spec_plot_wid.pack(fill=BOTH, side=LEFT)
@@ -389,14 +394,14 @@ class MainWindow:
         else:
             print('Clicked outside axes bounds')
 
-    def change_sky_aperture(self):
-        """ Toggle free and annular sky aperture and update plots """
-        self.sky_aperture = self.sky_choice.get()
-        self.update_spec_object()
+    # def change_sky_aperture(self):
+    #     """ Toggle free and annular sky aperture and update plots """
+    #     self.sky_aperture = self.sky_choice.get()
+    #     self.update_spec_object()
 
     def enter_r_apt_sky(self, _=None):
         """ Set object and sky aperture radius and update plots """
-        self.r = self.r_apt_var.get()
+        # self.r = self.r_apt_var.get()
         self.sky_r = self.r_sky_var.get()
         self.update_spec_object()
 

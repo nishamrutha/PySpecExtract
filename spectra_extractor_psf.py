@@ -246,11 +246,11 @@ class SpecExtract:
 
             # Sky subtracted cube
             self.splice_cube_skysub = self.splice_cube - sky_mean[:, None, None]
-            self.splice_err_skysub = np.sqrt(self.splice_err + sky_error[:, None, None])
+            self.splice_err_skysub = self.splice_err + sky_error[:, None, None]
 
             # Extract from one pixel
             self.spec_wifes_raw = self.splice_cube_skysub[:, self.row, self.col]
-            self.spec_wifes_err = self.splice_err_skysub[:, self.row, self.col]
+            self.spec_wifes_err = np.sqrt(self.splice_err_skysub[:, self.row, self.col])
         else:
             # Spliced sky
             sky_mean = np.mean(self.splice_cube[:, self.mask_min], axis=1)
@@ -269,7 +269,6 @@ class SpecExtract:
             self.psf_fit = PsfFit(self.splice_cube_skysub, self.splice_err_skysub, self.row, self.col, self.model_type)
             self.spec_wifes_raw = self.psf_fit.extracted_spectrum
             self.spec_wifes_err = self.psf_fit.extracted_error
-            print(self.spec_wifes_err)
 
         # Save MARZ-friendly FITS
         if save:
@@ -445,15 +444,12 @@ class SpecExtract:
             plt.savefig(f'{save_loc}/{self.obj_name}.pdf')
 
         plt.close()
-        self.psf_fit.make_model_evaluation_plot(save='out/psf_fits')
 
-
-# def dt2mjd(dt):
-#     """Matplotlib datetime to MJD"""
-#     dt = md.num2date(dt)
-#     x = Time(dt, format='datetime')
-#     x = x.to_value('mjd', 'float')
-#     return x
+    def plot_model_evaluation(self, save_loc='out/psf_fits'):
+        if save_loc:
+            self.psf_fit.make_model_evaluation_plot(save=f'{save_loc}/{self.obj_name}.pdf')
+        else:
+            self.psf_fit.make_model_evaluation_plot(save=False)
 
 
 def red_blue_filename_sep(obj):
@@ -573,4 +569,5 @@ def make_amalgamated_file(raw_dir, check_wifes=True):
 # spec_extract.plot_spatial(save=False).show()
 # spec_extract.generate_spec(save=False)
 # spec_extract.plot_spec(save=False).show()
-# spec_extract.plot_wavelength_profile(save=False).show()
+# spec_extract.plot_wavelength_profile(save=False)
+# spec_extract.plot_model_evaluation(save_loc=None)

@@ -30,7 +30,7 @@ __email__ = "neelesh.amrutha<AT>anu.edu.au"
 #  Constants  #
 ###############
 n_spec_bin = 8  # Number of spectral bins for PSF fitting
-norm_factor = 1e15
+norm_factor = 1e15  # For better fitting
 
 
 ############################################################################################
@@ -240,8 +240,8 @@ def fit_moffat_2d(image, variance, x0_init, y0_init, box=10, p0=None, bounds=Non
         p0 = [amp0, x0_init, y0_init, 2, 2, 4.5, 0.0, offset0]
 
     if bounds is None:
-        lower = [0.0, xi - 2, yi - 2, 0.3, 0.3, 1.1, -np.pi, -1e2]
-        upper = [1e4, xi + 2, yi + 2, box, box, 10.0, np.pi, 1e4]
+        lower = [0.0, xi - 2, yi - 2, 0.3, 0.3, 1.12, -np.pi, -1e2]
+        upper = [1e4, xi + 2, yi + 2, box, box, 5, np.pi, 1e4]
         bounds = (lower, upper)
 
     # least squares fit
@@ -399,14 +399,14 @@ class PsfFit:
 
     def __init__(self, flux_cube, error_cube, init_row, init_col, model_type):
         # cubes are in (n_wave, n_row, n_col) format.
-        # Error is variance
         self.flux = flux_cube
-        self.error = error_cube
+        self.error = error_cube  # Error must be variance
         self.n_wave, self.ny, self.nx = self.flux.shape
 
         # Scale for easier fitting
         self.flux *= norm_factor
         self.error *= norm_factor**2
+        print(np.median(self.flux), np.median(self.error))
 
         # Initial guess for PSF center
         self.init_row = init_row
@@ -490,7 +490,7 @@ class PsfFit:
         for flux_bin, error_bin in zip(self.flux_bins, self.error_bins):
             # Sum over wavelength axis to get 2D image for PSF fitting
             image_2d = np.nansum(flux_bin, axis=0)
-            error_2d = np.nansum(error_bin, axis=0)
+            error_2d = np.nansum(error_bin, axis=0)  # Variance here
 
             # Fit Moffat PSF model to the 2D image
             fit_result = fit_moffat_2d(
@@ -498,11 +498,8 @@ class PsfFit:
                 variance=error_2d,
                 x0_init=self.init_col,
                 y0_init=self.init_row,
-                box=10
-            )
-
+                box=10)
             fit_results.append(fit_result)
-
         return fit_results
 
     def extract_spectrum(self):
@@ -677,74 +674,39 @@ class PsfFit:
         """
 
         fig, axes = plt.subplots(8, 3, figsize=(6, 16))
+
         if self.model_type == 'gaussian':
-            amp = np.array([r['params']['amp'] for r in self.fit_results])
-            x0 = np.array([r['params']['x0'] for r in self.fit_results])
-            y0 = np.array([r['params']['y0'] for r in self.fit_results])
-            sx = np.array([r['params']['sigma_x'] for r in self.fit_results])
-            sy = np.array([r['params']['sigma_y'] for r in self.fit_results])
-            th = np.array([r['params']['theta'] for r in self.fit_results])
-
-            # Make 8 psf models
-            data, models, residuals = [], [], []
-            for i in range(8):
-                yy, xx = np.mgrid[0:self.ny, 0:self.nx]
-                image_2d = np.nansum(self.flux_bins[i], axis=0)
-                error_2d = np.sqrt(np.nansum(self.error_bins[i], axis=0))
-
-                resid, model = make_model_image([amp[i], x0[i], y0[i], sx[i], sy[i], th[i], 0.0],
-                                                xx, yy, image_2d, model_type='gaussian')
-                # normalise residual to error
-                resid_norm = resid / np.maximum(error_2d, 1e-12)
-                data.append(image_2d)
-                models.append(model)
-                residuals.append(resid_norm)
-            for i in range(8):
-                im = axes[i, 0].imshow(data[i], origin='lower', cmap='viridis')
-                plt.colorbar(im, ax=axes[i, 0], fraction=0.046, pad=0.04)
-                im = axes[i, 1].imshow(models[i], origin='lower', cmap='viridis')
-                plt.colorbar(im, ax=axes[i, 1], fraction=0.046, pad=0.04)
-                im = axes[i, 2].imshow(residuals[i], origin='lower', cmap='bwr', vmin=-3, vmax=3)
-                plt.colorbar(im, ax=axes[i, 2], fraction=0.046, pad=0.04)
-
+            keys = ['amp', 'x0', 'y0', 'sigma_x', 'sigma_y', 'theta', 'offset']
         elif self.model_type == 'moffat':
-            amp = np.array([r['params']['amp'] for r in self.fit_results])
-            x0 = np.array([r['params']['x0'] for r in self.fit_results])
-            y0 = np.array([r['params']['y0'] for r in self.fit_results])
-            ax = np.array([r['params']['alpha_x'] for r in self.fit_results])
-            ay = np.array([r['params']['alpha_y'] for r in self.fit_results])
-            be = np.array([r['params']['beta'] for r in self.fit_results])
-            th = np.array([r['params']['theta'] for r in self.fit_results])
-
-            # Make 8 psf models
-            data, models, residuals = [], [], []
-            for i in range(8):
-                yy, xx = np.mgrid[0:self.ny, 0:self.nx]
-                image_2d = np.nansum(self.flux_bins[i], axis=0)
-                error_2d = np.sqrt(np.nansum(self.error_bins[i], axis=0))
-
-                resid, model = make_model_image([amp[i], x0[i], y0[i], ax[i], ay[i], be[i], th[i], 0.0],
-                                                xx, yy, image_2d, model_type='moffat')
-                # normalise residual to error
-                resid_norm = resid / np.maximum(error_2d, 1e-12)
-                data.append(image_2d)
-                models.append(model)
-                residuals.append(resid_norm)
-            for i in range(8):
-                im = axes[i, 0].imshow(data[i], origin='lower', cmap='viridis')
-                plt.colorbar(im, ax=axes[i, 0], fraction=0.046*35/25, pad=0.04)
-                c_lim = im.get_clim()
-                im = axes[i, 1].imshow(models[i], origin='lower', cmap='viridis')
-                im.set_clim(c_lim)
-                plt.colorbar(im, ax=axes[i, 1], fraction=0.046*35/25, pad=0.04)
-                im = axes[i, 2].imshow(residuals[i], origin='lower', cmap='bwr', vmin=-3, vmax=3)
-                plt.colorbar(im, ax=axes[i, 2], fraction=0.046*35/25, pad=0.04)
+            keys = ['amp', 'x0', 'y0', 'alpha_x', 'alpha_y', 'beta', 'theta', 'offset']
         else:
-            raise ValueError("Unknown model_type. Choose 'gaussian' or 'moffat'.")
+            keys = None
+
+        # Generate and plot a psf model for each spectral bin based on the fit
+        for i in range(8):
+            yy, xx = np.mgrid[0:self.ny, 0:self.nx]
+            image_2d = np.nansum(self.flux_bins[i], axis=0)
+            error_2d = np.sqrt(np.nansum(self.error_bins[i], axis=0))
+
+            params = [self.fit_results[i]['params'][key] for key in keys]
+
+            resid, model = make_model_image(params, xx, yy, image_2d, model_type=self.model_type)
+            # normalise residual to error
+            resid_norm = resid / np.maximum(error_2d, 1e-12)
+            resid_max = np.max(np.abs(resid_norm)) * 0.8
+
+            im = axes[i, 0].imshow(image_2d, origin='lower', cmap='viridis')
+            plt.colorbar(im, ax=axes[i, 0], fraction=0.046*35/25, pad=0.04)
+            c_lim = im.get_clim()
+            im = axes[i, 1].imshow(model, origin='lower', cmap='viridis')
+            im.set_clim(c_lim)
+            plt.colorbar(im, ax=axes[i, 1], fraction=0.046*35/25, pad=0.04)
+            im = axes[i, 2].imshow(resid_norm, origin='lower', cmap='bwr', vmin=-resid_max, vmax=resid_max)
+            plt.colorbar(im, ax=axes[i, 2], fraction=0.046*35/25, pad=0.04)
 
         axes[0, 0].set_title('Data')
         axes[0, 1].set_title('PSF Model')
-        axes[0, 2].set_title('Residual/sigma')
+        axes[0, 2].set_title('Residual 80%')
         plt.tight_layout()
         if save:
             plt.savefig(save)
