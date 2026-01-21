@@ -19,21 +19,18 @@ Version 2.0 includes psf fitting.
 import glob
 import os
 
-# import matplotlib.dates as md
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from astropy.io import fits
-# from astropy.time import Time
 from matplotlib import rcParams
-from mpl_toolkits.axes_grid1 import make_axes_locatable
-from psf_fit import PsfFit
+import psf_fit as psfit
 
 ##############
 # Authorship #
 ##############
 __author__ = "Neelesh Amrutha"
-__date__ = "03 December 2025"
+__date__ = "21 January 2026"
 
 __license__ = "GPL-3.0"
 __version__ = "2.0"
@@ -88,7 +85,10 @@ rcParams['savefig.bbox'] = 'tight'
 edge_trim = 3  # remove edge from n_row for bad pixel rows in WiFeS
 n_row, n_col = 38 - edge_trim, 25  # WiFeS cube face dimensions
 sep = 5650  # WiFeS blue/red separation wavelength
-full_min, full_max = 3800, 7800  # WiFeS spectrum range (blue + red)
+full_min, full_max = 3800, 8000  # WiFeS spectrum range (blue + red)
+
+# PSF model type: moffat is recommended, and works better for real data
+model_type = 'moffat'  # PSF model type options: 'gaussian' or 'moffat'
 
 
 ############################################################################################
@@ -171,7 +171,17 @@ class SpecExtract:
         self.splice_err[0:len(self.blue_ind), :, :] = self.blue_e[self.blue_ind, :, :]
         self.splice_err[len(self.blue_ind):, :, :] = self.red_e[self.red_ind, :, :]
         self.wave_wifes = np.concatenate((self.wave_blue[self.blue_ind], self.wave_red[self.red_ind]))
+
+        # Cut restframe 5577A line
+        sky_line_ind = np.argwhere((self.wave_wifes > 5572) & (self.wave_wifes <= 5582))
+        self.splice_cube[sky_line_ind, :, :] = np.nan
+        self.splice_err[sky_line_ind, :, :] = np.nan
         self.splice_image = np.nanmedian(self.splice_cube, axis=0)
+
+        # For plotting the wavelength divisions
+        self.split_wave = np.array_split(self.wave_wifes, 8)
+        self.split_wave = [np.max(wv) for wv in self.split_wave]
+        self.psf_bin = 3
 
         # Observed dates
         self.obs_red = self.red_head['DATE-OBS']
@@ -196,7 +206,7 @@ class SpecExtract:
         self.spec_wifes_raw = None
         self.spec_wifes_err = None
         self.psf_fit = None
-        self.model_type = 'moffat'  # PSF model type
+        self.model_type = model_type  # PSF model type
 
         # Set kwargs attributes
         for key, value in kwargs.items():
@@ -266,7 +276,8 @@ class SpecExtract:
             self.splice_cube_skysub = self.splice_cube - sky_mean[:, None, None]
             self.splice_err_skysub = self.splice_err + sky_error[:, None, None]
 
-            self.psf_fit = PsfFit(self.splice_cube_skysub, self.splice_err_skysub, self.row, self.col, self.model_type)
+            self.psf_fit = psfit.PsfFit(self.splice_cube_skysub, self.splice_err_skysub,
+                                        self.row, self.col, self.model_type)
             self.spec_wifes_raw = self.psf_fit.extracted_spectrum
             self.spec_wifes_err = self.psf_fit.extracted_error
 
@@ -288,9 +299,9 @@ class SpecExtract:
                    'OBS_RED': self.obs_red,  # Save dates
                    'OBS_BLUE': self.obs_blue,
                    'OBS_MJD': self.obs_mjd,  # observed MJD
-                   'row_sky': self.row_min + edge_trim,  # de-offset bad rows when saving
-                   'col_sky': self.col_min,
-                   'sky_rad': self.sky_r,
+                   'ROW_SKY': self.row_min + edge_trim,  # de-offset bad rows when saving
+                   'COL_SKY': self.col_min,
+                   'SKY_RAD': self.sky_r,
                    'PSF_MOD': self.model_type
                    }
 
@@ -312,30 +323,54 @@ class SpecExtract:
             hdu2.header.update({'Error': '1 sigma', 'Unit': 'erg s^-1 cm^-2 Angstrom^-1'})  # intensity error unit
             fits.HDUList([hdu, hdu1, hdu2]).writeto(f'{save_loc}/{self.obj_name}.fits', overwrite=True)  # write
 
-    def plot_spatial(self, save=False, save_loc='spat_plots/'):
+    def plot_spatial(self, save=False, save_loc='spat_plots/', init=False):
         """
         Method to plot the spatial image with aperture and sky regions.
 
         :param save: Boolean flag to indicate whether to save the plot or not.
         :param save_loc: Location to save the plot.
+        :param init: Boolean flag to indicate whether pdf_fit exists or not.
         :return: The figure object to display in the GUI.
         """
+        figsize = (15, 8)  # 3.5
         self.make_mask()
-
-        # Circles to show aperture and sky on spatial image
+        # Circles to show aperture and sky on spatial image and rectangle to mark central pixel
         circle = plt.Circle((self.col_min, self.row_min), self.sky_r, color='r', linestyle='--', fill=False)
-
-        # Mark central pixel
         rect = plt.Rectangle((self.col - 0.5, self.row - 0.5), 1, 1, color='r', fill=False)
+        fig, (ax_spat, ax0, ax1, ax2) = plt.subplots(1, 4, figsize=figsize)
+        bin_psf = self.psf_bin
 
-        ''' Blue '''
-        fig, ax_spat = plt.subplots(1, 1)
-        divider = make_axes_locatable(ax_spat)
-        cax = divider.append_axes('right', size='5%', pad=0.05)
-        imb = ax_spat.imshow(self.splice_image)  # edge bad rows at edge not shown
-        fig.colorbar(imb, cax=cax, orientation='vertical')
+        if (not init) & (self.psf_fit is not None):
+            image_2d, resid, model = self.psf_fit.get_single_fit_plot(bin_psf)
+            resid_max = np.max(np.abs(resid)) * 0.8
+            with np.errstate(invalid='ignore'):  # We know sky subtraction will give negative values
+                im = ax0.imshow(np.log10(image_2d), origin='lower', cmap='viridis')
+            plt.colorbar(im, ax=ax0, fraction=0.046 * 35 / 25, pad=0.04)
+            c_lim = im.get_clim()
+            with np.errstate(invalid='ignore'):  # We know sky subtraction will give negative values
+                im = ax1.imshow(np.log10(model), origin='lower', cmap='viridis')
+            im.set_clim(c_lim)
+            plt.colorbar(im, ax=ax1, fraction=0.046 * 35 / 25, pad=0.04)
+            im = ax2.imshow(resid, origin='lower', cmap='bwr', vmin=-resid_max, vmax=resid_max)
+            plt.colorbar(im, ax=ax2, fraction=0.046 * 35 / 25, pad=0.04)
+        else:
+            for ax in [ax0, ax1, ax2]:
+                im = ax.imshow(np.zeros(self.splice_image.shape), origin='lower', cmap='viridis',
+                               vmin=-1, vmax=1)
+                plt.colorbar(im, ax=ax, fraction=0.046 * 35 / 25, pad=0.04)
+
+        imb = ax_spat.imshow(np.log10(self.splice_image))  # edge bad rows at edge not shown
+
+        plt.colorbar(imb, ax=ax_spat, fraction=0.046 * 35 / 25, pad=0.04)
         ax_spat.add_patch(circle)
         ax_spat.add_patch(rect)
+
+        ax_spat.set_xlabel('Full')
+        ax_spat.invert_yaxis()
+        ax0.set_xlabel('Bin ' + str(bin_psf))
+        ax1.set_xlabel('PSF Model')
+        ax2.set_xlabel('Residual 80%')
+        plt.tight_layout()
 
         # Save
         if save:
@@ -356,7 +391,7 @@ class SpecExtract:
         e_wif = self.spec_wifes_err * 0.5
 
         # Plot
-        fig, ax = plt.subplots(1, 1, figsize=(12.15, 3))
+        fig, ax = plt.subplots(1, 1, figsize=(14.1, 3))  # 12.15
         ax.plot(self.wave_wifes, self.spec_wifes_raw, 'b-',
                 linewidth=0.75, label='WiFeS', zorder=2)
         y_lim = ax.get_ylim()
@@ -364,12 +399,14 @@ class SpecExtract:
         # Shade error
         ax.fill_between(self.wave_wifes, (self.spec_wifes_raw - e_wif), (self.spec_wifes_raw + e_wif),
                         alpha=0.3, facecolor='r')
+        for wav in self.split_wave:
+            ax.axvline(wav, color='k', linestyle='--', linewidth=0.5, zorder=3)
 
         ax.set_ylim(y_lim)
 
         # Labels
-        ax.set_xlabel(r'Wavelength ($\AA$)')
-        ax.set_ylabel(r'Flux ($erg\ s^{-1}\ cm^{-2}\ \AA^{-1}$)')
+        ax.set_xlabel(r'Wavelength (\AA)')
+        ax.set_ylabel(r'Flux ($\mathrm{erg}\ \mathrm{s}^{-1}\ \mathrm{cm}^{-2}$ \AA$^{-1}$)')
         ax.set_xlim([full_min, full_max])
         ax.legend(loc='upper left', fontsize=10)
         plt.tight_layout()
@@ -420,7 +457,7 @@ class SpecExtract:
         elif self.model_type == 'moffat':
             arr = np.array([self.psf_fit.x0_arr, self.psf_fit.y0_arr, self.psf_fit.ax_arr,
                             self.psf_fit.ay_arr, self.psf_fit.be_arr, self.psf_fit.th_arr])
-            labs = ['xy', 'FWHM', r'$\beta$ - $\theta$']
+            labs = ['Position', 'FWHM', r'$\beta$ ; $\theta$']
             legs = [r'$x_0$', r'$y_0$', r'FWHM$_x$', r'FWHM$_y$', r'$\beta$', r'$\theta$']
 
             # convert to FWHM
@@ -483,11 +520,11 @@ def red_blue_filename_sep(obj):
                 result['red'] = fn
             else:
                 print("Could not read file: " + fits_name)
-        elif fits_name.endswith("_R.fits") or fits_name.endswith("_B.fits"):
+        elif fits_name.endswith("_Red.p11.fits") or fits_name.endswith("_Blue.p11.fits"):
             # For WiFeS era files
-            if fits_name.endswith("_B.fits"):
+            if fits_name.endswith("_Blue.p11.fits"):
                 result['blue'] = fn
-            elif fits_name.endswith("_R.fits"):
+            elif fits_name.endswith("_Red.p11.fits"):
                 result['red'] = fn
         else:
             print("Could not read file: " + fits_name)
@@ -519,17 +556,25 @@ def make_amalgamated_file(raw_dir, check_wifes=True):
         obj_list.write('file,object,id\n')  # Column names
         for f in raw_file_list:
             fits_name = os.path.basename(f)
-            if fits_name.startswith("T2m3w") or fits_name.startswith("OBK") or \
-                    fits_name.endswith("_R.fits") or fits_name.endswith("_B.fits"):
-                with fits.open(f) as hdu_l:
-                    hdr = hdu_l[0].header
-                    obj = hdr['OBJECT']
-                    ra = hdr['RA']
-                    dec = hdr['DEC']
-                    mjd = hdr['MJD-OBS']
-                    # unique identifier for object
-                    id_unique = f"{obj}_{ra}_{dec}_{mjd:.4f}"
-                    obj_list.write(f"{f},{obj},{id_unique}\n")
+            # if fits_name.startswith("T2m3w") or fits_name.startswith("OBK") or \
+            #         fits_name.endswith("p11.fits"):
+            if fits_name.startswith("T2m3w"):
+                typ = f.split('.')[-3].split('-')[-1] + f.split('.')[-2]
+            elif fits_name.startswith("OBK"):
+                typ = f.split('-')[1] + f.split('.')[-2]
+            elif fits_name.endswith("p11.fits"):
+                typ = f.split('/')[-1].split('_')[0] + 'OTH'
+            else:
+                continue
+            with fits.open(f) as hdu_l:
+                hdr = hdu_l[0].header
+                obj = hdr['OBJECT']
+                ra = hdr['RA']
+                dec = hdr['DEC']
+                mjd = hdr['MJD-OBS']
+                # unique identifier for object
+                id_unique = f"{obj}~{ra}~{dec}~{mjd:.2f}~{typ}"
+                obj_list.write(f"{f},{obj},{id_unique}\n")
     print("Done")
 
     # Group file - object relation based on object and separate blue/red file paths
@@ -565,6 +610,7 @@ def make_amalgamated_file(raw_dir, check_wifes=True):
 #                            "/Users/neelesh/Desktop/WiFeS_Raw/T2m3wb-20220526.112848-0345.p11.fits")
 
 # make_amalgamated_file("/Users/neelesh/Desktop/WiFeS_Raw", check_wifes=True)
+# make_amalgamated_file("/Users/neelesh/mnt/", check_wifes=True)
 
 # spec_extract.plot_spatial(save=False).show()
 # spec_extract.generate_spec(save=False)

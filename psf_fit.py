@@ -19,7 +19,7 @@ import matplotlib.pyplot as plt
 # Authorship #
 ##############
 __author__ = "Neelesh Amrutha"
-__date__ = "03 December 2025"
+__date__ = "21 January 2026"
 
 __license__ = "GPL-3.0"
 __version__ = "2.0"
@@ -30,7 +30,7 @@ __email__ = "neelesh.amrutha<AT>anu.edu.au"
 #  Constants  #
 ###############
 n_spec_bin = 8  # Number of spectral bins for PSF fitting
-norm_factor = 1e15  # For better fitting
+norm_factor = 1e13  # For better fitting
 
 
 ############################################################################################
@@ -61,7 +61,7 @@ def gaussian_2d(xy, amp, x0, y0, sigma_x, sigma_y, theta, offset):
 def moffat_2d(xx, yy, x0, y0, alpha_x, alpha_y, beta, theta):
     """
     Elliptical, rotated Moffat profile on grid (xx, yy).
-    Returns the Moffat evaluated at each pixel (not normalized to sum=1).
+    Returns the Moffat evaluated at each pixel (not normalised to sum=1).
     Functional form:
        M(x,y) = [1 + R^2]^{-beta}
     where R^2 = (xr/alpha_x)^2 + (yr/alpha_y)^2 after rotation.
@@ -94,11 +94,11 @@ def make_model_image(params, x, y, data, model_type='gaussian'):
     else:
         raise ValueError("Unknown model_type")
 
-    resid = model - data
+    resid = data - model
     return resid, model
 
 
-def _residuals(params, x, y, data, var, mask_valid, model_type='gaussian'):
+def _residuals(params, x, y, data, var, mask_valid, model_type='moffat'):
     """
     Residuals for least_squares. Uses sqrt(var) as sigma.
 
@@ -112,180 +112,275 @@ def _residuals(params, x, y, data, var, mask_valid, model_type='gaussian'):
     sigma = np.sqrt(var)
 
     # Return only properly weighted valid pixels
-    r = resid[mask_valid] / np.maximum(sigma[mask_valid], 1e-12)
+    r = resid[mask_valid] / np.maximum(sigma[mask_valid], 1e-12)  # whitened residuals
     return r.ravel()
 
 
-def fit_gaussian_2d(image, variance, x0_init, y0_init, box=10, p0=None, bounds=None):
-    """Fit a 2D elliptical Gaussian + offset to image using variance as weights.
-
-    image, variance: 2D numpy arrays
-    x0_init, y0_init: center in pixel coordinates (image pixel frame)
-    box: half-width of fitting box (so size = 2*box+1)
-    p0: optional initial parameters [amp, x0, y0, sigma_x, sigma_y, theta, offset]
-    bounds: optional bounds tuple (lower, upper) for parameters
-
-    Returns dict with best-fit params, uncertainties (approx from Jacobian), and fit metadata.
+def _make_spline(w, y, y_err, s, log=False, min_points=4):
+    """
+    Build an inverse-variance weighted smoothing spline.
+    If log=True, spline is built in log(y) space (for widths).
     """
 
-    # cutout
+    w = np.asarray(w)
+    y = np.asarray(y)
+    y_err = np.asarray(y_err)
+
+    # valid points
+    m = (np.isfinite(w) & np.isfinite(y) & np.isfinite(y_err) & (y_err > 0))
+
+    if log:
+        m &= (y > 0)
+
+    if m.sum() < min_points:
+        return None
+
+    yy = np.log(y[m]) if log else y[m]
+
+    # propagate errors for log-space
+    if log:
+        yy_err = y_err[m] / y[m]
+    else:
+        yy_err = y_err[m]
+
+    wgt = 1.0 / yy_err**2
+
+    spl = UnivariateSpline(w[m], yy, w=wgt, s=s)
+
+    if not log:
+        return spl
+
+    # wrap spline so it returns exp(log α)
+    def spl_exp(x):
+        return np.exp(spl(x))
+
+    return spl_exp
+
+
+def fit_gaussian_2d(image, variance, x0_init, y0_init, box=10, p0=None, bounds=None):
+    """
+    Fit a 2D elliptical Gaussian + offset to image using variance as weights.
+    """
+
+    # Cutout
     ny, nx = image.shape
     xi = int(round(x0_init))
     yi = int(round(y0_init))
+
     x0 = max(0, xi - box)
     x1 = min(nx, xi + box + 1)
     y0 = max(0, yi - box)
     y1 = min(ny, yi + box + 1)
+
     cut_image = image[y0:y1, x0:x1].astype(float)
     cut_var = variance[y0:y1, x0:x1].astype(float)
 
     yy, xx = np.mgrid[0:cut_image.shape[0], 0:cut_image.shape[1]]
-    # convert to same pixel coordinates as original
     X = xx + x0
     Y = yy + y0
 
-    # mask valid pixels where variance > 0 and finite
-    mask_valid = np.isfinite(cut_image) & np.isfinite(cut_var) & (cut_var > 0)
+    mask_valid = (
+        np.isfinite(cut_image) &
+        np.isfinite(cut_var) &
+        (cut_var > 0)
+    )
 
-    # initial params
+    if mask_valid.sum() < 10:
+        return {
+            'success': False,
+            'message': 'Too few valid pixels for fit',
+            'params': {},
+            'errors': {},
+            'covariance': None,
+            'chi2': np.nan,
+            'dof': 0,
+            'cutout_slice': (slice(y0, y1), slice(x0, x1)),
+        }
+
+    # Initial parameters
     if p0 is None:
-        amp0 = np.nanmax(cut_image) - np.nanmedian(cut_image)
-        amp0 = amp0 if amp0 > 0 else np.nanmax(cut_image)
-        offset0 = np.nanmedian(cut_image)
-        p0 = [amp0, x0_init, y0_init, 2, 2, 0.0, offset0]
+        amp0 = np.nanmax(cut_image[mask_valid]) - np.nanmedian(cut_image[mask_valid])
+        amp0 = amp0 if amp0 > 0 else np.nanmax(cut_image[mask_valid])
+        offset0 = np.nanmedian(cut_image[mask_valid])
+        p0 = [amp0, x0_init, y0_init, 2.0, 2.0, 0.0, offset0]
 
+    # Bounds (physically enforced)
     if bounds is None:
-        lower = [0.0, xi - 2, yi - 2, 0.3, 0.3, -np.pi, -1e4]
-        upper = [1e4, xi + 2, yi + 2, box, box, np.pi, 1e4]
+        sigma_min = 0.3
+        sigma_max = box * 0.8
+
+        lower = [0.0, xi - 2, yi - 2, sigma_min, sigma_min, -np.pi, -1e5]
+        upper = [1e5, xi + 2, yi + 2, sigma_max, sigma_max,  np.pi,  1e5]
         bounds = (lower, upper)
 
-    # flatten mask for selection in residual function
-    mask_flat = mask_valid
-
-    res = least_squares(_residuals, x0=p0, args=(X, Y, cut_image, cut_var, mask_flat), bounds=bounds)
+    # Least-squares fit
+    res = least_squares(
+        _residuals,
+        x0=p0,
+        args=(X, Y, cut_image, cut_var, mask_valid, 'gaussian'),
+        bounds=bounds,
+        method='trf'
+    )
 
     popt = res.x
-    # estimate covariance matrix: cov ~= inv(J^T J) * residual_variance
-    # note: least_squares returns jac scaled; compute residual variance per dof
-    J = res.jac
-    _, s, VT = np.linalg.svd(J, full_matrices=False)
-    # pseudo-inverse
-    threshold = np.finfo(float).eps * max(J.shape) * s[0]
-    s_inv = np.array([1.0 / si if si > threshold else 0.0 for si in s])
-    J_pinv = (VT.T * s_inv) @ (np.eye(len(s))) @ J.T
-    dof = np.sum(mask_valid) - len(popt)
-    dof = float(dof) if dof > 0 else 1.0
-    resid = res.fun
-    resid_var = np.sum(resid ** 2) / dof
-    try:
-        cov = J_pinv @ J_pinv.T * resid_var
-        p_err = np.sqrt(np.abs(np.diag(cov)))
-    except Exception:
-        cov = None
-        p_err = np.full_like(popt, np.nan)
+    J = res.jac   # whitened Jacobian
 
+    # Fit statistics
+    n_pix = mask_valid.sum()
+    dof = max(n_pix - len(popt), 1)
+
+    chi2 = np.sum(res.fun ** 2)
+    chi2_red = chi2 / dof
+
+    # Robust covariance via SVD
+    col_norm = np.linalg.norm(J, axis=0)
+    good = col_norm > (1e-10 * col_norm.max())
+
+    cov = np.full((len(popt), len(popt)), np.inf)
+
+    if good.sum() > 0:
+        Jr = J[:, good]
+
+        U, s, VT = np.linalg.svd(Jr, full_matrices=False)
+        thresh = np.finfo(float).eps * max(Jr.shape) * s[0]
+        s_inv = np.array([1.0 / si if si > thresh else 0.0 for si in s])
+
+        J_pinv = VT.T @ np.diag(s_inv) @ U.T
+        cov_r = J_pinv @ J_pinv.T * chi2_red
+
+        cov[np.ix_(good, good)] = cov_r
+
+    p_err = np.sqrt(np.diag(cov))
+
+    # Output
     keys = ['amp', 'x0', 'y0', 'sigma_x', 'sigma_y', 'theta', 'offset']
-    params = {k: float(v) for k, v in zip(keys, popt)}
-    errors = {k + '_err': float(e) for k, e in zip(keys, p_err)}
+    params = dict(zip(keys, popt))
+    errors = {k + '_err': e for k, e in zip(keys, p_err)}
 
-    out = {
+    return {
         'params': params,
         'errors': errors,
         'covariance': cov,
         'success': bool(res.success),
         'message': res.message,
-        'chi2': float(np.sum(res.fun ** 2)),
-        'dof': int(np.sum(mask_valid) - len(popt)),
+        'chi2': chi2,
+        'chi2_red': chi2_red,
+        'dof': dof,
         'cutout_slice': (slice(y0, y1), slice(x0, x1)),
     }
-    return out
 
 
 def fit_moffat_2d(image, variance, x0_init, y0_init, box=10, p0=None, bounds=None):
-    """Fit a 2D elliptical Moffat + offset to image using variance as weights.
+    """
+    Fit a 2D elliptical Moffat + offset to image using variance as weights.
 
-    image, variance: 2D numpy arrays
-    x0_init, y0_init: center in pixel coordinates (image pixel frame)
-    box: half-width of fitting box (so size = 2*box+1)
-    p0: optional initial parameters [amp, x0, y0, alpha_x, alpha_y, beta, theta, offset]
-    bounds: optional bounds tuple (lower, upper) for parameters
-
-    Returns dict with best-fit params, uncertainties (approx from Jacobian), and fit metadata.
+    Returns dict with best-fit params, uncertainties (from Fisher matrix),
+    and fit metadata.
     """
 
-    # cutout
+    # Cutout
     ny, nx = image.shape
     xi = int(round(x0_init))
     yi = int(round(y0_init))
+
     x0 = max(0, xi - box)
     x1 = min(nx, xi + box + 1)
     y0 = max(0, yi - box)
     y1 = min(ny, yi + box + 1)
+
     cut_image = image[y0:y1, x0:x1].astype(float)
     cut_var = variance[y0:y1, x0:x1].astype(float)
 
     yy, xx = np.mgrid[0:cut_image.shape[0], 0:cut_image.shape[1]]
-    # convert to same pixel coordinates as original
     X = xx + x0
     Y = yy + y0
 
-    # mask valid pixels where variance > 0 and finite
-    mask_valid = np.isfinite(cut_image) & np.isfinite(cut_var) & (cut_var > 0)
+    # valid pixels
+    mask_valid = (
+        np.isfinite(cut_image) &
+        np.isfinite(cut_var) &
+        (cut_var > 0)
+    )
 
-    # initial params
+    if mask_valid.sum() < 10:
+        return {
+            'success': False,
+            'message': 'Too few valid pixels for fit',
+            'params': {},
+            'errors': {},
+            'covariance': None,
+            'chi2': np.nan,
+            'dof': 0,
+            'cutout_slice': (slice(y0, y1), slice(x0, x1)),
+        }
+
+    # Initial parameters
     if p0 is None:
-        amp0 = np.nanmax(cut_image) - np.nanmedian(cut_image)
-        amp0 = amp0 if amp0 > 0 else np.nanmax(cut_image)
-        offset0 = np.nanmedian(cut_image)
-        p0 = [amp0, x0_init, y0_init, 2, 2, 4.5, 0.0, offset0]
+        amp0 = np.nanmax(cut_image[mask_valid]) - np.nanmedian(cut_image[mask_valid])
+        amp0 = amp0 if amp0 > 0 else np.nanmax(cut_image[mask_valid])
+        offset0 = np.nanmedian(cut_image[mask_valid])
+        p0 = [amp0, x0_init, y0_init, 2.0, 2.0, 4.5, 0.0, offset0]
 
     if bounds is None:
-        lower = [0.0, xi - 2, yi - 2, 0.3, 0.3, 1.12, -np.pi, -1e2]
-        upper = [1e4, xi + 2, yi + 2, box, box, 5, np.pi, 1e4]
+        lower = [0.0, xi - 2, yi - 2, 0.3, 0.3, 1.12, -np.pi, -1e4]
+        upper = [1e5, xi + 2, yi + 2, box * 0.5, box * 0.5, 6.0,  np.pi,  1e5]
         bounds = (lower, upper)
 
-    # least squares fit
-    res = least_squares(_residuals, x0=p0,
-                        args=(X, Y, cut_image, cut_var, mask_valid, 'moffat'),
-                        bounds=bounds)
+    # Least-squares fit
+    res = least_squares(
+        _residuals,
+        x0=p0,
+        args=(X, Y, cut_image, cut_var, mask_valid, 'moffat'),
+        bounds=bounds,
+        method='trf'
+    )
 
     popt = res.x
-    J = res.jac
+    J = res.jac   # whitened Jacobian
 
-    # correct SVD-based pseudoinverse
-    U, s, VT = np.linalg.svd(J, full_matrices=False)
-    threshold = np.finfo(float).eps * max(J.shape) * s[0]
-    s_inv = np.array([1.0 / si if si > threshold else 0.0 for si in s])
-    J_pinv = VT.T @ np.diag(s_inv) @ U.T
+    # Degrees of freedom
+    n_pix = mask_valid.sum()
+    dof = max(n_pix - len(popt), 1)
 
-    dof = np.sum(mask_valid) - len(popt)
-    dof = float(dof) if dof > 0 else 1.0
+    chi2 = np.sum(res.fun ** 2)
+    chi2_red = chi2 / dof
 
-    resid = res.fun
-    resid_var = np.sum(resid ** 2) / dof
+    # Robust covariance via SVD
+    col_norm = np.linalg.norm(J, axis=0)
+    good = col_norm > (1e-10 * col_norm.max())
 
-    try:
-        cov = J_pinv @ J_pinv.T * resid_var
-        p_err = np.sqrt(np.abs(np.diag(cov)))
-    except Exception:
-        cov = None
-        p_err = np.full_like(popt, np.nan)
+    cov = np.full((len(popt), len(popt)), np.inf)
 
+    if good.sum() > 0:
+        Jr = J[:, good]
+
+        U, s, VT = np.linalg.svd(Jr, full_matrices=False)
+        thresh = np.finfo(float).eps * max(Jr.shape) * s[0]
+        s_inv = np.array([1.0 / si if si > thresh else 0.0 for si in s])
+
+        J_pinv = VT.T @ np.diag(s_inv) @ U.T
+        cov_r = J_pinv @ J_pinv.T * chi2_red
+
+        cov[np.ix_(good, good)] = cov_r
+
+    p_err = np.sqrt(np.diag(cov))
+
+    # Output
     keys = ['amp', 'x0', 'y0', 'alpha_x', 'alpha_y', 'beta', 'theta', 'offset']
-    params = {k: float(v) for k, v in zip(keys, popt)}
-    errors = {k + '_err': float(e) for k, e in zip(keys, p_err)}
+    params = dict(zip(keys, popt))
+    errors = {k + '_err': e for k, e in zip(keys, p_err)}
 
-    out = {
+    return {
         'params': params,
         'errors': errors,
         'covariance': cov,
         'success': bool(res.success),
         'message': res.message,
-        'chi2': float(np.sum(res.fun ** 2)),
-        'dof': int(np.sum(mask_valid) - len(popt)),
+        'chi2': chi2,
+        'chi2_red': chi2_red,
+        'dof': dof,
         'cutout_slice': (slice(y0, y1), slice(x0, x1)),
     }
-    return out
 
 
 def evaluate_smooth_moffat(psf_spline_model, wavelength_axis):
@@ -301,7 +396,7 @@ def evaluate_smooth_moffat(psf_spline_model, wavelength_axis):
 def moffat_normalisation(alpha_x, alpha_y, beta):
     """
     Analytic integral of the elliptical Moffat over infinite plane:
-      Integral M dA = pi * alpha_x * alpha_y / (beta - 1)
+      Integral M * dA = pi * alpha_x * alpha_y / (beta - 1)
     See: 2D Moffat normalisation for elliptical axes.
     We return the factor so that P = M / integral => sum(P) ~ 1 (continuum normalisation).
     """
@@ -340,7 +435,7 @@ def build_spectrally_smooth_psf_model(wave_centers, psf_fit_results):
 
 
 def build_spectrally_smooth_moffat_model(wave_centers, fit_results, beta_default=4.5,
-                                         s_x0=0.5, s_y0=0.5, s_alpha=0.2, s_beta=0.2, s_theta=0.2):
+                                         s_x0=0.3, s_y0=0.3, s_alpha=0.3, s_beta=0.1, s_theta=0.1):
     """
     Build UnivariateSplines for x0(λ), y0(λ), alpha_x(λ), alpha_y(λ), beta(λ), theta(λ).
     - If fit_results contains sigma_x/sigma_y (Gaussian fit), convert using beta_default.
@@ -363,13 +458,30 @@ def build_spectrally_smooth_moffat_model(wave_centers, fit_results, beta_default
         ay[k] = r['params'].get('alpha_y', np.nan)
         be[k] = r['params'].get('beta', beta_default)
 
-    # make splines; choose smoothing 's' values loosely tuned (you can tweak)
-    spl_x0 = UnivariateSpline(wave_centers, x0, s=s_x0)
-    spl_y0 = UnivariateSpline(wave_centers, y0, s=s_y0)
-    spl_ax = UnivariateSpline(wave_centers, ax, s=s_alpha)
-    spl_ay = UnivariateSpline(wave_centers, ay, s=s_alpha)
-    spl_be = UnivariateSpline(wave_centers, be, s=s_beta)
-    spl_th = UnivariateSpline(wave_centers, th, s=s_theta)
+    x0e = np.array([r['errors'].get('x0_err', np.inf) for r in fit_results])
+    y0e = np.array([r['errors'].get('y0_err', np.inf) for r in fit_results])
+    axe = np.array([r['errors'].get('alpha_x_err', np.inf) for r in fit_results])
+    aye = np.array([r['errors'].get('alpha_y_err', np.inf) for r in fit_results])
+    bee = np.array([r['errors'].get('beta_err', np.inf) for r in fit_results])
+    the = np.array([r['errors'].get('theta_err', np.inf) for r in fit_results])
+
+    spl_x0 = _make_spline(wave_centers, x0, x0e, s_x0)
+    spl_y0 = _make_spline(wave_centers, y0, y0e, s_y0)
+
+    # Sometimes alpha splines would shoot up randomly and I couldn't figure out why, so here's a dirty fix:
+    dlog = np.abs(np.diff(np.log(ax)))
+    ax[1:][dlog > 0.5] = np.nan  # Cannot have 3x jump between adjacent bins
+    dlog = np.abs(np.diff(np.log(ay)))
+    ay[1:][dlog > 0.5] = np.nan
+    spl_ax = _make_spline(wave_centers, ax, axe, s_alpha, log=True)
+    spl_ay = _make_spline(wave_centers, ay, aye, s_alpha, log=True)
+
+    # Currently fixing beta and theta to median values, because they shouldn't change much with wavelength
+    # comment out next two lines to fit splines
+    be = np.ones(len(wave_centers)) * np.nanmedian(be)
+    th = np.ones(len(wave_centers)) * np.nanmedian(th)
+    spl_be = _make_spline(wave_centers, be, bee, s_beta)
+    spl_th = _make_spline(wave_centers, th, the, s_theta)
 
     return {
         'x0': spl_x0,
@@ -406,9 +518,8 @@ class PsfFit:
         # Scale for easier fitting
         self.flux *= norm_factor
         self.error *= norm_factor**2
-        print(np.median(self.flux), np.median(self.error))
 
-        # Initial guess for PSF center
+        # Initial guess for PSF centre
         self.init_row = init_row
         self.init_col = init_col
 
@@ -416,7 +527,6 @@ class PsfFit:
         self.model_type = model_type.lower()
 
         # Split spectrum into bins for PSF fitting
-        # self.wave_bins = np.array_split(self.wave, n_spec_bin)
         self.flux_bins = np.array_split(self.flux, n_spec_bin, axis=0)
         self.error_bins = np.array_split(self.error, n_spec_bin, axis=0)
 
@@ -424,8 +534,11 @@ class PsfFit:
         self.extracted_error = np.zeros(self.n_wave)
 
         wave_centers = np.linspace(0, self.n_wave - 1, n_spec_bin)
+        self.fit_results = None
+        self.keys = None
 
         if self.model_type == 'gaussian':
+            self.keys = ['amp', 'x0', 'y0', 'sigma_x', 'sigma_y', 'theta', 'offset']
             self.fit_results = self.fit_psf()
     
             # build smooth PSF model    
@@ -446,6 +559,7 @@ class PsfFit:
             self.extracted_error /= norm_factor
             
         elif self.model_type == 'moffat':
+            self.keys = ['amp', 'x0', 'y0', 'alpha_x', 'alpha_y', 'beta', 'theta', 'offset']
             self.fit_results = self.fit_moffat_psf()
 
             # build smooth Moffat PSF model
@@ -498,7 +612,7 @@ class PsfFit:
                 variance=error_2d,
                 x0_init=self.init_col,
                 y0_init=self.init_row,
-                box=10)
+                box=5)
             fit_results.append(fit_result)
         return fit_results
 
@@ -675,25 +789,17 @@ class PsfFit:
 
         fig, axes = plt.subplots(8, 3, figsize=(6, 16))
 
-        if self.model_type == 'gaussian':
-            keys = ['amp', 'x0', 'y0', 'sigma_x', 'sigma_y', 'theta', 'offset']
-        elif self.model_type == 'moffat':
-            keys = ['amp', 'x0', 'y0', 'alpha_x', 'alpha_y', 'beta', 'theta', 'offset']
-        else:
-            keys = None
-
         # Generate and plot a psf model for each spectral bin based on the fit
         for i in range(8):
             yy, xx = np.mgrid[0:self.ny, 0:self.nx]
             image_2d = np.nansum(self.flux_bins[i], axis=0)
-            error_2d = np.sqrt(np.nansum(self.error_bins[i], axis=0))
 
-            params = [self.fit_results[i]['params'][key] for key in keys]
+            params = [self.fit_results[i]['params'][key] for key in self.keys]
 
             resid, model = make_model_image(params, xx, yy, image_2d, model_type=self.model_type)
             # normalise residual to error
-            resid_norm = resid / np.maximum(error_2d, 1e-12)
-            resid_max = np.max(np.abs(resid_norm)) * 0.8
+            # resid_norm = resid / np.maximum(error_2d, 1e-12)
+            resid_max = np.max(np.abs(resid)) * 0.8
 
             im = axes[i, 0].imshow(image_2d, origin='lower', cmap='viridis')
             plt.colorbar(im, ax=axes[i, 0], fraction=0.046*35/25, pad=0.04)
@@ -701,7 +807,7 @@ class PsfFit:
             im = axes[i, 1].imshow(model, origin='lower', cmap='viridis')
             im.set_clim(c_lim)
             plt.colorbar(im, ax=axes[i, 1], fraction=0.046*35/25, pad=0.04)
-            im = axes[i, 2].imshow(resid_norm, origin='lower', cmap='bwr', vmin=-resid_max, vmax=resid_max)
+            im = axes[i, 2].imshow(resid, origin='lower', cmap='bwr', vmin=-resid_max, vmax=resid_max)
             plt.colorbar(im, ax=axes[i, 2], fraction=0.046*35/25, pad=0.04)
 
         axes[0, 0].set_title('Data')
@@ -712,3 +818,21 @@ class PsfFit:
             plt.savefig(save)
 
         plt.close()
+
+    def get_single_fit_plot(self, bin_psf=3):
+        if self.fit_results:
+            result = self.fit_results[bin_psf]
+
+            params = [result['params'][key] for key in self.keys]
+            yy, xx = np.mgrid[0:self.ny, 0:self.nx]
+            image_2d = np.nansum(self.flux_bins[bin_psf], axis=0)
+
+            resid, model = make_model_image(params, xx, yy, image_2d, model_type=self.model_type)
+
+            image_2d /= norm_factor
+            resid /= norm_factor
+            model /= norm_factor
+
+            return image_2d, resid, model
+        else:
+            return None

@@ -2,7 +2,7 @@
 
 """
 This module handles the GUI frontend of the PySpecExtract GUI designed
- to extract and analyze spectra from PyWiFeS-reduced ANU 2.3m telescope data.
+ to extract and analyse spectra from PyWiFeS-reduced ANU 2.3m telescope data.
  The code uses TkInter to graphically adjust parameters such as aperture size
  and position for sky subtraction to quickly browse and extract
  spectra from a large sample of .p11.fits files.
@@ -31,7 +31,7 @@ matplotlib.use('TkAgg')
 # Authorship #
 ##############
 __author__ = "Neelesh Amrutha"
-__date__ = "03 December 2025"
+__date__ = "21 January 2026"
 
 __license__ = "GPL-3.0"
 __version__ = "2.0"
@@ -55,7 +55,7 @@ class RawDirs:
         raw_frame: Frame widget for the directory selection window.
         raw_dir_log: Text widget for displaying log messages.
         label_get_raw_dir: Label widget displaying a prompt to choose a directory.
-        default_color: Default color of the label_get_raw_dir text.
+        default_color: Default colour of the label_get_raw_dir text.
 
         button_explore: Button widget to open the file explorer.
         button_raw_dir_next: Button widget to continue to the next window.
@@ -149,7 +149,7 @@ class MainWindow:
 
     def __init__(self, root, raw_dir, obj_list):
         """
-        Initialize the MainWindow class.
+        Initialise the MainWindow class.
 
         Parameters:
             root (Tk): Root window object.
@@ -196,8 +196,8 @@ class MainWindow:
         self.row_min = 30
         self.col_min = 12
         self.r = 2  # aperture radius
-        self.sky_aperture = 'annular'  # [disjoint, annular]
-        self.sky_r = 2  # sky aperture radius
+        self.sky_r = 2.5  # sky aperture radius
+        self.psf_bin = 3
 
         # Frames
         self.obj_sky_frame = Frame(self.root)
@@ -237,25 +237,15 @@ class MainWindow:
         self.radio_obj = Radiobutton(self.obj_sky_frame, text="Object", variable=self.click_choice, value='obj')
         self.radio_sky = Radiobutton(self.obj_sky_frame, text="Sky", variable=self.click_choice, value='sky')
 
-        # Radio buttons to toggle sky aperture
-        # self.sky_choice = StringVar(self.obj_sky_frame, self.sky_aperture)
-        # self.label_sky_select = Label(self.obj_sky_frame,
-        #                               text="Sky type: ")
-        # self.radio_sky_free = Radiobutton(self.obj_sky_frame,
-        #                                   text="Free", variable=self.sky_choice, value='disjoint',
-        #                                   command=self.change_sky_aperture)
-        # self.radio_sky_ann = Radiobutton(self.obj_sky_frame,
-        #                                  text="Annular", variable=self.sky_choice, value='annular',
-        #                                  command=self.change_sky_aperture)
-
-        # Entry box to set object and sky aperture size
-        # self.r_apt_var = DoubleVar(self.obj_sky_frame, self.r)
+        # Entry box to set sky aperture size and which spectral bin to show psf fit for
         self.r_sky_var = DoubleVar(self.obj_sky_frame, self.sky_r)
-        # self.label_r_apt = Label(self.obj_sky_frame, text="Aperture R:")
-        # self.entry_r_apt = Entry(self.obj_sky_frame, textvariable=self.r_apt_var, width=5)
         self.label_r_sky = Label(self.obj_sky_frame, text="Sky R/width:")
         self.entry_r_sky = Entry(self.obj_sky_frame, textvariable=self.r_sky_var, width=5)
+        self.psf_bin_var = IntVar(self.obj_sky_frame, self.psf_bin)
+        self.label_psf_bin = Label(self.obj_sky_frame, text="Spec bin PSF (0-7):")
+        self.entry_psf_bin = Entry(self.obj_sky_frame, textvariable=self.psf_bin_var, width=5)
         self.btn_r_entry = Button(self.obj_sky_frame, text="Enter", command=self.enter_r_apt_sky)
+        self.btn_reset_current = Button(self.obj_sky_frame, text="Reset", command=self.reset_spec_object)
 
         # Pack buttons in order (using .pack instead of .grid was a bad idea)
         self.label_counter.pack(side=LEFT)
@@ -268,21 +258,22 @@ class MainWindow:
         self.label_click_select.pack(side=LEFT)
         self.radio_obj.pack(side=LEFT)
         self.radio_sky.pack(side=LEFT)
-        # self.label_sky_select.pack(side=LEFT, padx=(30, 1))
-        # self.radio_sky_ann.pack(side=LEFT)
-        # self.radio_sky_free.pack(side=LEFT)
-        # self.label_r_apt.pack(side=LEFT, padx=(30, 1))
-        # self.entry_r_apt.pack(side=LEFT)
+        self.label_psf_bin.pack(side=LEFT, padx=(10, 1))
+        self.entry_psf_bin.pack(side=LEFT)
         self.label_r_sky.pack(side=LEFT, padx=(10, 1))
         self.entry_r_sky.pack(side=LEFT)
         self.btn_r_entry.pack(side=LEFT)
+        self.btn_reset_current.pack(side=LEFT)
 
         # Pack the frames
         self.obj_sky_frame.pack(side=TOP)
         self.btn_frame.pack(side=BOTTOM)
         self.spec_frame.pack(fill=X, side=BOTTOM)
-        self.log_frame.pack(fill=BOTH, side=RIGHT, expand=True)
-        self.spatial_frame.pack()
+        self.spatial_frame.pack(side=LEFT, fill=Y)  # Plot on the left, fixed width
+        self.log_frame.pack(side=RIGHT, fill=BOTH, expand=True)  # Log fills remaining space
+
+        # self.log_frame.pack(fill=BOTH, side=RIGHT, expand=True)
+        # self.spatial_frame.pack(fill=BOTH, side=RIGHT)
 
         print(f"Loaded {self.len_loaded} objects.")
 
@@ -300,7 +291,7 @@ class MainWindow:
         self.current_row = self.obj_list[self.obj_list['object'] == choice].iloc[0]
         self.reset_plots()
         self.spec_object = self.get_new_spec_object()
-        self.run_spec()
+        self.run_spec(init=True)
 
     def text_redirector(self, in_str):
         """ Redirect print statements to log text space """
@@ -314,18 +305,18 @@ class MainWindow:
     def run_spec(self, save=False, init=False):
         """ Generate spatial+spectral plot along with sky-subtracted data """
 
+        # Generate spectrum
+        self.spec_object.make_mask()
+        self.spec_object.generate_spec(save_loc=self.spec_data_dir, save=save, init=init)
+
         # Plot spatial image
-        self.spat_fig = self.spec_object.plot_spatial(save=save, save_loc=self.spat_plot_dir)
+        self.spat_fig = self.spec_object.plot_spatial(save=save, save_loc=self.spat_plot_dir, init=init)
         self.spat_fig.canvas.callbacks.connect('button_press_event', self.get_row_col_click)
         self.spat_canvas = FigureCanvasTkAgg(self.spat_fig, master=self.spatial_frame)
         self.spat_fig.canvas.draw()
         self.spat_plot_wid = self.spat_canvas.get_tk_widget()
         self.spat_toolbar = NavigationToolbar2Tk(self.spat_canvas, self.spatial_frame)
         self.spat_toolbar.update()
-
-        # Generate spectrum
-        self.spec_object.make_mask()
-        self.spec_object.generate_spec(save_loc=self.spec_data_dir, save=save, init=init)
 
         # Plot spectrum
         self.spec_fig = self.spec_object.plot_spec(save=save, save_loc=self.spec_plot_dir)
@@ -361,6 +352,7 @@ class MainWindow:
             self.current_row = self.obj_list[self.obj_list['object'] == self.name_list[self.counter]].iloc[0]
             self.reset_plots()
             self.spec_object = self.get_new_spec_object()
+            self.opt_select.set(self.name_list[self.counter])
             self.run_spec(init=True)
 
     def back_cmd(self):
@@ -373,19 +365,17 @@ class MainWindow:
             self.current_row = self.obj_list[self.obj_list['object'] == self.name_list[self.counter]].iloc[0]
             self.reset_plots()
             self.spec_object = self.get_new_spec_object()
-            self.run_spec()
+            self.opt_select.set(self.name_list[self.counter])
+            self.run_spec(init=True)
 
     def get_row_col_click(self, event):
         """ Get object position from click events and update plots """
         if event.inaxes is not None:  # click inside axes
             if self.click_choice.get() == 'sky':
-                if self.sky_aperture == 'disjoint':
-                    self.col_min = round(event.xdata)
-                    self.row_min = round(event.ydata)
-                    print(f"Set new position for sky at {self.col_min}, {self.row_min}")
-                    self.update_spec_object()
-                else:
-                    print("Select free sky aperture to choose sky region.")
+                self.col_min = round(event.xdata)
+                self.row_min = round(event.ydata)
+                print(f"Set new position for sky at {self.col_min}, {self.row_min}")
+                self.update_spec_object()
             else:  # Object
                 self.col = round(event.xdata)
                 self.row = round(event.ydata)
@@ -394,15 +384,14 @@ class MainWindow:
         else:
             print('Clicked outside axes bounds')
 
-    # def change_sky_aperture(self):
-    #     """ Toggle free and annular sky aperture and update plots """
-    #     self.sky_aperture = self.sky_choice.get()
-    #     self.update_spec_object()
-
     def enter_r_apt_sky(self, _=None):
         """ Set object and sky aperture radius and update plots """
-        # self.r = self.r_apt_var.get()
         self.sky_r = self.r_sky_var.get()
+
+        if 0 <= self.psf_bin_var.get() <= 7:
+            self.psf_bin = self.psf_bin_var.get()
+        else:
+            print("Spectral bin for PSF must be between 1 and 8")
         self.update_spec_object()
 
     def update_spec_object(self):
@@ -412,8 +401,8 @@ class MainWindow:
         self.spec_object.row_min = self.row_min
         self.spec_object.col_min = self.col_min
         self.spec_object.r = self.r
-        self.spec_object.sky_aperture = self.sky_aperture
         self.spec_object.sky_r = self.sky_r
+        self.spec_object.psf_bin = self.psf_bin
         self.reset_plots()
         self.run_spec()
 
@@ -423,12 +412,27 @@ class MainWindow:
                               self.current_row['red'],
                               self.current_row['blue'],
                               r=self.r,
-                              sky_aperture=self.sky_aperture,
                               sky_r=self.sky_r,
                               row=self.row,
                               col=self.col,
                               row_min=self.row_min,
                               col_min=self.col_min)
+
+    def reset_spec_object(self):
+        """ Reset SpecExtract object to default parameters """
+        self.row = 16
+        self.col = 12
+        self.row_min = 30
+        self.col_min = 12
+        self.r = 2  # aperture radius
+        self.sky_r = 2.5  # sky aperture radius
+        self.psf_bin = 3
+        self.r_sky_var.set(self.sky_r)
+        self.psf_bin_var.set(self.psf_bin)
+        self.spec_object = self.get_new_spec_object()
+        self.opt_select.set(self.name_list[self.counter])
+        self.reset_plots()
+        self.run_spec(init=True)
 
     def reset_plots(self):
         """ Destroy the previous plots """
@@ -442,6 +446,8 @@ class MainWindow:
 # Start the application
 master = Tk()
 # app = RawDirs(master)
-app = MainWindow(master, "/Users/neelesh/Desktop/WiFeS_Raw",
-                 pd.read_csv("/Users/neelesh/Desktop/WiFeS_Raw/object_fits_list.csv"))  # Testing
+app = MainWindow(master, "/Users/neelesh/mnt",
+                 pd.read_csv("/Users/neelesh/mnt/object_fits_list.csv"))  # Testing
+# app = MainWindow(master, "/Users/neelesh/Desktop/Codes/PySpecExtract/sim_3C273",
+#                  pd.read_csv("/Users/neelesh/Desktop/Codes/PySpecExtract/sim_3C273/object_fits_list.csv"))  # Testing
 master.mainloop()
