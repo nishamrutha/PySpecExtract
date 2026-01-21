@@ -421,9 +421,9 @@ def build_spectrally_smooth_psf_model(wave_centers, psf_fit_results):
     # smoothing splines (s tuned for mild smoothing)
     spl_x0 = UnivariateSpline(wave_centers, x0, s=0.5)
     spl_y0 = UnivariateSpline(wave_centers, y0, s=0.5)
-    spl_sx = UnivariateSpline(wave_centers, sx, s=0.3)
-    spl_sy = UnivariateSpline(wave_centers, sy, s=0.3)
-    spl_th = UnivariateSpline(wave_centers, th, s=0.3)
+    spl_sx = UnivariateSpline(wave_centers, sx, s=10)
+    spl_sy = UnivariateSpline(wave_centers, sy, s=10)
+    spl_th = UnivariateSpline(wave_centers, th, s=0.5)
 
     return {
         'x0': spl_x0,
@@ -435,7 +435,7 @@ def build_spectrally_smooth_psf_model(wave_centers, psf_fit_results):
 
 
 def build_spectrally_smooth_moffat_model(wave_centers, fit_results, beta_default=4.5,
-                                         s_x0=0.3, s_y0=0.3, s_alpha=0.3, s_beta=0.1, s_theta=0.1):
+                                         s_x0=0.5, s_y0=0.5, s_alpha=10, s_beta=0.1, s_theta=0.1):
     """
     Build UnivariateSplines for x0(λ), y0(λ), alpha_x(λ), alpha_y(λ), beta(λ), theta(λ).
     - If fit_results contains sigma_x/sigma_y (Gaussian fit), convert using beta_default.
