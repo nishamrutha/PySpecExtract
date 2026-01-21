@@ -445,9 +445,8 @@ class MainWindow:
 
 # Start the application
 master = Tk()
-# app = RawDirs(master)
-app = MainWindow(master, "/Users/neelesh/mnt",
-                 pd.read_csv("/Users/neelesh/mnt/object_fits_list.csv"))  # Testing
-# app = MainWindow(master, "/Users/neelesh/Desktop/Codes/PySpecExtract/sim_3C273",
-#                  pd.read_csv("/Users/neelesh/Desktop/Codes/PySpecExtract/sim_3C273/object_fits_list.csv"))  # Testing
+app = RawDirs(master)
+# Uncomment below line and comment line above to directly start main window
+# app = MainWindow(master, "/path/to/dir/", pd.read_csv("/path/to/object_fits_list.csv"))
+
 master.mainloop()

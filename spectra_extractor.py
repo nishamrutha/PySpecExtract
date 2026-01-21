@@ -351,19 +351,11 @@ class SpecExtract:
         :param save_loc: Location to save the plot.
         :return: The figure object to display in GUI.
         """
-        # Error shading -- y +/- y_std/2
-        e_wif = self.spec_wifes_err * 0.5
 
         # Plot
         fig, ax = plt.subplots(1, 1, figsize=(12.15, 3))
         ax.plot(self.wave_wifes, self.spec_wifes_raw, 'b-',
                 linewidth=0.75, label='WiFeS', zorder=2)
-        #ax.plot(self.wave_wifes, self.spec_wifes_err, 'r-',
-        #        linewidth=0.55, label='Error', zorder=3)
-
-        # Shade error
-        #ax.fill_between(self.wave_wifes, (self.spec_wifes_raw - e_wif), (self.spec_wifes_raw + e_wif),
-        #                alpha=0.3, facecolor='r')
 
         # Labels
         ax.set_xlabel(r'Wavelength ($\AA$)')
@@ -396,7 +388,7 @@ def red_blue_filename_sep(obj):
     :param obj: Dataframe containing only one object.
     :return: the obj dataframe condensed into a single Series object.
     """
-    result = {}
+    result = {'object': obj['object'].values[0]}
     for fn in obj['file']:
         # Get file name
         fits_name = os.path.basename(fn)
@@ -418,20 +410,20 @@ def red_blue_filename_sep(obj):
                 result['red'] = fn
             else:
                 print("Could not read file: " + fits_name)
-        elif fits_name.endswith("_R.fits") or fits_name.endswith("_B.fits"):
+        elif fits_name.endswith("_Red.p11.fits") or fits_name.endswith("_Blue.p11.fits"):
             # For WiFeS era files
-            if fits_name.endswith("_B.fits"):
+            if fits_name.endswith("_Blue.p11.fits"):
                 result['blue'] = fn
-            elif fits_name.endswith("_R.fits"):
+            elif fits_name.endswith("_Red.p11.fits"):
                 result['red'] = fn
         else:
             print("Could not read file: " + fits_name)
     return pd.Series(result,
-                     index=["blue", "red"],
+                     index=["object", "blue", "red"],
                      dtype="object")
 
 
-def make_amalgamated_file(raw_dir, check_wifes=False):
+def make_amalgamated_file(raw_dir, check_wifes=True):
     """
     Read directory containing FITS files, or subdirectories containing FITS files
     and save object_fits_list.csv file listing object and blue/red p11 FITS file paths
@@ -443,6 +435,7 @@ def make_amalgamated_file(raw_dir, check_wifes=False):
     # Read .p11.fits files in the directory or subdirectories
     if check_wifes:
         raw_file_list = glob.glob(f"{raw_dir}/**/*.p11.fits", recursive=True)
+        raw_file_list.extend(glob.glob(f"{raw_dir}/**/*.cube.fits", recursive=True))
     else:
         raw_file_list = glob.glob(f"{raw_dir}/**/*.fits", recursive=True)
     print(f"Found {len(raw_file_list)} files.")
@@ -450,36 +443,51 @@ def make_amalgamated_file(raw_dir, check_wifes=False):
     # Generate object - file relation
     print(f"Generating {raw_dir}/object_fits_list.csv...")
     with (open(f'{raw_dir}/object_fits_list.csv', 'w') as obj_list):
-        obj_list.write('file,object\n')  # Column names
+        obj_list.write('file,object,id\n')  # Column names
         for f in raw_file_list:
             fits_name = os.path.basename(f)
-            if fits_name.startswith("T2m3w") or fits_name.startswith("OBK") or \
-                    fits_name.endswith("_R.fits") or fits_name.endswith("_B.fits"):
-                with fits.open(f) as hdu_l:
-                    hdr = hdu_l[0].header
-                    obj = hdr['OBJECT']
-                    obj_list.write(f"{f},{obj}\n")
+            # if fits_name.startswith("T2m3w") or fits_name.startswith("OBK") or \
+            #         fits_name.endswith("p11.fits"):
+            if fits_name.startswith("T2m3w"):
+                typ = f.split('.')[-3].split('-')[-1] + f.split('.')[-2]
+            elif fits_name.startswith("OBK"):
+                typ = f.split('-')[1] + f.split('.')[-2]
+            elif fits_name.endswith("p11.fits"):
+                typ = f.split('/')[-1].split('_')[0] + 'OTH'
+            else:
+                continue
+            with fits.open(f) as hdu_l:
+                hdr = hdu_l[0].header
+                obj = hdr['OBJECT']
+                ra = hdr['RA']
+                dec = hdr['DEC']
+                mjd = hdr['MJD-OBS']
+                # unique identifier for object
+                id_unique = f"{obj}~{ra}~{dec}~{mjd:.2f}~{typ}"
+                obj_list.write(f"{f},{obj},{id_unique}\n")
     print("Done")
 
     # Group file - object relation based on object and separate blue/red file paths
     print(f"Condensing {raw_dir}/object_fits_list.csv...")
     obj_list = pd.read_csv(f'{raw_dir}/object_fits_list.csv')
-    obj_list = obj_list.groupby(['object'], as_index=False).apply(red_blue_filename_sep).reset_index(drop=True)
+
+    # Group by unique id and separate blue/red files
+    obj_list = obj_list.groupby(['id'],
+                                as_index=False).apply(red_blue_filename_sep,
+                                                      include_groups=False).reset_index(drop=True)
+
+    # Number duplicates
+    n = obj_list.groupby("object").cumcount()
+    for i in range(len(n)):
+        if n[i] > 0:
+            obj_list.at[i, "object"] = f"{obj_list.at[i, 'object']}_{int(n[i]+1)}"
+
+    # Sort
+    obj_list = obj_list.sort_values(by='id').reset_index(drop=True)
+
+    # Save condensed list
     obj_list.to_csv(f'{raw_dir}/object_fits_list.csv', index=False)
     print("Done")
-
-    # Warning: Does not work well with duplicate object names in FITS headers,
-    # manually generate raw_dir/object_fits_list.csv to bypass duplicates.
     print(f"Found {len(obj_list)} unique spectra.")
 
     return obj_list
-
-# Testing
-# spec_extract = SpecExtract("g0209537-135321",
-#                            "../Data/CLAGNPlotter/raw_wifes/202211/T2m3wr-20221122.123045-0128.p11.fits",
-#                            "../Data/CLAGNPlotter/raw_wifes/202211/T2m3wb-20221122.123045-0128.p11.fits")
-
-# spec_extract.sky_aperture = 'annular'
-# spec_extract.plot_spatial(save=False).show()
-# spec_extract.generate_spec(save=False)
-# spec_extract.plot_spec(save=False).show()

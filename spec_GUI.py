@@ -433,6 +433,6 @@ class MainWindow:
 # Start the application
 master = Tk()
 app = RawDirs(master)
-# app = MainWindow(master, "../Data/CLAGNPlotter/raw_wifes/",
-#                  pd.read_csv("../Data/CLAGNPlotter/raw_wifes/object_fits_list.csv"))  # Testing
+# Uncomment below line and comment line above to directly start main window
+# app = MainWindow(master, "/path/to/dir/", pd.read_csv("/path/to/object_fits_list.csv"))
 master.mainloop()

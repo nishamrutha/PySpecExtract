@@ -588,7 +588,9 @@ def make_amalgamated_file(raw_dir, check_wifes=True):
 
     # Number duplicates
     n = obj_list.groupby("object").cumcount()
-    obj_list["object"] = obj_list["object"] + np.where(n == 0, "", "_" + (n + 1).astype(str))
+    for i in range(len(n)):
+        if n[i] > 0:
+            obj_list.at[i, "object"] = f"{obj_list.at[i, 'object']}_{int(n[i]+1)}"
 
     # Sort
     obj_list = obj_list.sort_values(by='id').reset_index(drop=True)
@@ -600,20 +602,3 @@ def make_amalgamated_file(raw_dir, check_wifes=True):
 
     return obj_list
 
-
-# Testing
-# spec_extract = SpecExtract("g1007504-090445",
-#                            "/Users/neelesh/Desktop/WiFeS_Raw/T2m3wr-20220526.085114-0337.p11.fits",
-#                            "/Users/neelesh/Desktop/WiFeS_Raw/T2m3wb-20220526.085114-0337.p11.fits")
-# spec_extract = SpecExtract("1254564-265702",
-#                            "/Users/neelesh/Desktop/WiFeS_Raw/T2m3wr-20220526.112847-0345.p11.fits",
-#                            "/Users/neelesh/Desktop/WiFeS_Raw/T2m3wb-20220526.112848-0345.p11.fits")
-
-# make_amalgamated_file("/Users/neelesh/Desktop/WiFeS_Raw", check_wifes=True)
-# make_amalgamated_file("/Users/neelesh/mnt/", check_wifes=True)
-
-# spec_extract.plot_spatial(save=False).show()
-# spec_extract.generate_spec(save=False)
-# spec_extract.plot_spec(save=False).show()
-# spec_extract.plot_wavelength_profile(save=False)
-# spec_extract.plot_model_evaluation(save_loc=None)
