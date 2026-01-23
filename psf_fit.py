@@ -2,9 +2,12 @@
 
 """
 This module defines a class called PsfFit for performing point spread function (PSF) fitting on astronomical images.
+It follows the methodology outlined in Horne (1986) for optimal spectrum extraction:
+https://ui.adsabs.harvard.edu/abs/1986PASP...98..609H/abstract
 
+This version is designed for IFU cubes, with the PSF fit smoothly across the wavelength dimension.
 
-Version 2.0 includes psf fitting.
+Version 2.0 includes PSF fitting.
 """
 
 #############
@@ -19,7 +22,7 @@ import matplotlib.pyplot as plt
 # Authorship #
 ##############
 __author__ = "Neelesh Amrutha"
-__date__ = "21 January 2026"
+__date__ = "23 January 2026"
 
 __license__ = "GPL-3.0"
 __version__ = "2.0"
@@ -106,8 +109,16 @@ def _residuals(params, x, y, data, var, mask_valid, model_type='moffat'):
       [amp, x0, y0, sigma_x, sigma_y, theta, offset]
 
     Moffat params:
-      [amp, x0, y0, alpha_x, alpha_y, beta, theta, offset]
+      [amp, x0, y0, alpha, q, beta, theta, offset]
+      Different parametrisation for fitting stability.
     """
+    if model_type == 'moffat':
+        # alpha and q to alpha_x, alpha_y
+        amp, x0, y0, alpha, q, beta, theta, offset = params
+        ax = alpha / np.sqrt(q)
+        ay = alpha * np.sqrt(q)
+        params = (amp, x0, y0, ax, ay, beta, theta, offset)
+
     resid, model = make_model_image(params, x, y, data, model_type)
     sigma = np.sqrt(var)
 
@@ -121,13 +132,10 @@ def _make_spline(w, y, y_err, s, log=False, min_points=4):
     Build an inverse-variance weighted smoothing spline.
     If log=True, spline is built in log(y) space (for widths).
     """
-
     w = np.asarray(w)
     y = np.asarray(y)
     y_err = np.asarray(y_err)
-
-    # valid points
-    m = (np.isfinite(w) & np.isfinite(y) & np.isfinite(y_err) & (y_err > 0))
+    m = (np.isfinite(w) & np.isfinite(y) & np.isfinite(y_err) & (y_err > 0))  # valid points
 
     if log:
         m &= (y > 0)
@@ -144,7 +152,6 @@ def _make_spline(w, y, y_err, s, log=False, min_points=4):
         yy_err = y_err[m]
 
     wgt = 1.0 / yy_err**2
-
     spl = UnivariateSpline(w[m], yy, w=wgt, s=s)
 
     if not log:
@@ -160,6 +167,8 @@ def _make_spline(w, y, y_err, s, log=False, min_points=4):
 def fit_gaussian_2d(image, variance, x0_init, y0_init, box=10, p0=None, bounds=None):
     """
     Fit a 2D elliptical Gaussian + offset to image using variance as weights.
+
+    Returns dict with best-fit params, uncertainties and fit metadata.
     """
 
     # Cutout
@@ -179,23 +188,14 @@ def fit_gaussian_2d(image, variance, x0_init, y0_init, box=10, p0=None, bounds=N
     X = xx + x0
     Y = yy + y0
 
-    mask_valid = (
-        np.isfinite(cut_image) &
-        np.isfinite(cut_var) &
-        (cut_var > 0)
-    )
+    mask_valid = (np.isfinite(cut_image) & np.isfinite(cut_var) & (cut_var > 0))
 
     if mask_valid.sum() < 10:
-        return {
-            'success': False,
-            'message': 'Too few valid pixels for fit',
-            'params': {},
-            'errors': {},
-            'covariance': None,
-            'chi2': np.nan,
-            'dof': 0,
-            'cutout_slice': (slice(y0, y1), slice(x0, x1)),
-        }
+        return {'success': False,
+                'message': 'Too few valid pixels for fit',
+                'params': {}, 'errors': {},
+                'covariance': None, 'chi2': np.nan,
+                'dof': 0, 'cutout_slice': (slice(y0, y1), slice(x0, x1))}
 
     # Initial parameters
     if p0 is None:
@@ -204,9 +204,9 @@ def fit_gaussian_2d(image, variance, x0_init, y0_init, box=10, p0=None, bounds=N
         offset0 = np.nanmedian(cut_image[mask_valid])
         p0 = [amp0, x0_init, y0_init, 2.0, 2.0, 0.0, offset0]
 
-    # Bounds (physically enforced)
+    # Bounds
     if bounds is None:
-        sigma_min = 0.3
+        sigma_min = 1
         sigma_max = box * 0.8
 
         lower = [0.0, xi - 2, yi - 2, sigma_min, sigma_min, -np.pi, -1e5]
@@ -214,13 +214,9 @@ def fit_gaussian_2d(image, variance, x0_init, y0_init, box=10, p0=None, bounds=N
         bounds = (lower, upper)
 
     # Least-squares fit
-    res = least_squares(
-        _residuals,
-        x0=p0,
-        args=(X, Y, cut_image, cut_var, mask_valid, 'gaussian'),
-        bounds=bounds,
-        method='trf'
-    )
+    res = least_squares(_residuals, x0=p0,
+                        args=(X, Y, cut_image, cut_var, mask_valid, 'gaussian'),
+                        bounds=bounds, method='trf')
 
     popt = res.x
     J = res.jac   # whitened Jacobian
@@ -257,25 +253,17 @@ def fit_gaussian_2d(image, variance, x0_init, y0_init, box=10, p0=None, bounds=N
     params = dict(zip(keys, popt))
     errors = {k + '_err': e for k, e in zip(keys, p_err)}
 
-    return {
-        'params': params,
-        'errors': errors,
-        'covariance': cov,
-        'success': bool(res.success),
-        'message': res.message,
-        'chi2': chi2,
-        'chi2_red': chi2_red,
-        'dof': dof,
-        'cutout_slice': (slice(y0, y1), slice(x0, x1)),
-    }
+    return {'params': params, 'errors': errors, 'covariance': cov,
+            'success': bool(res.success), 'message': res.message,
+            'chi2': chi2, 'chi2_red': chi2_red, 'dof': dof,
+            'cutout_slice': (slice(y0, y1), slice(x0, x1)), }
 
 
 def fit_moffat_2d(image, variance, x0_init, y0_init, box=10, p0=None, bounds=None):
     """
     Fit a 2D elliptical Moffat + offset to image using variance as weights.
 
-    Returns dict with best-fit params, uncertainties (from Fisher matrix),
-    and fit metadata.
+    Returns dict with best-fit params, uncertainties and fit metadata.
     """
 
     # Cutout
@@ -296,44 +284,31 @@ def fit_moffat_2d(image, variance, x0_init, y0_init, box=10, p0=None, bounds=Non
     Y = yy + y0
 
     # valid pixels
-    mask_valid = (
-        np.isfinite(cut_image) &
-        np.isfinite(cut_var) &
-        (cut_var > 0)
-    )
+    mask_valid = (np.isfinite(cut_image) & np.isfinite(cut_var) & (cut_var > 0))
 
     if mask_valid.sum() < 10:
-        return {
-            'success': False,
-            'message': 'Too few valid pixels for fit',
-            'params': {},
-            'errors': {},
-            'covariance': None,
-            'chi2': np.nan,
-            'dof': 0,
-            'cutout_slice': (slice(y0, y1), slice(x0, x1)),
-        }
+        return {'success': False, 'message': 'Too few valid pixels for fit',
+                'params': {}, 'errors': {}, 'covariance': None,
+                'chi2': np.nan, 'dof': 0, 'cutout_slice': (slice(y0, y1), slice(x0, x1))}
 
     # Initial parameters
     if p0 is None:
         amp0 = np.nanmax(cut_image[mask_valid]) - np.nanmedian(cut_image[mask_valid])
         amp0 = amp0 if amp0 > 0 else np.nanmax(cut_image[mask_valid])
         offset0 = np.nanmedian(cut_image[mask_valid])
-        p0 = [amp0, x0_init, y0_init, 2.0, 2.0, 4.5, 0.0, offset0]
+        p0 = [amp0, x0_init, y0_init, 2.5, 1, 3, 0.0, offset0]
 
     if bounds is None:
-        lower = [0.0, xi - 2, yi - 2, 0.3, 0.3, 1.12, -np.pi, -1e4]
-        upper = [1e5, xi + 2, yi + 2, box * 0.5, box * 0.5, 6.0,  np.pi,  1e5]
+        alpha_min, alpha_max = 1.0, 5.0  # Mean width scale
+        q_min, q_max = 0.8, 1.2  # ellipticity parameter
+        lower = [0.0, xi - 2, yi - 2, alpha_min, q_min, 1.1, -np.pi, -1e4]
+        upper = [1e5, xi + 2, yi + 2, alpha_max, q_max, 5.0,  np.pi,  1e5]
         bounds = (lower, upper)
 
     # Least-squares fit
-    res = least_squares(
-        _residuals,
-        x0=p0,
-        args=(X, Y, cut_image, cut_var, mask_valid, 'moffat'),
-        bounds=bounds,
-        method='trf'
-    )
+    res = least_squares(_residuals, x0=p0,
+                        args=(X, Y, cut_image, cut_var, mask_valid, 'moffat'),
+                        bounds=bounds, method='trf')
 
     popt = res.x
     J = res.jac   # whitened Jacobian
@@ -348,42 +323,51 @@ def fit_moffat_2d(image, variance, x0_init, y0_init, box=10, p0=None, bounds=Non
     # Robust covariance via SVD
     col_norm = np.linalg.norm(J, axis=0)
     good = col_norm > (1e-10 * col_norm.max())
-
     cov = np.full((len(popt), len(popt)), np.inf)
 
+    # Compute covariance for good parameters
     if good.sum() > 0:
         Jr = J[:, good]
-
         U, s, VT = np.linalg.svd(Jr, full_matrices=False)
         thresh = np.finfo(float).eps * max(Jr.shape) * s[0]
         s_inv = np.array([1.0 / si if si > thresh else 0.0 for si in s])
-
         J_pinv = VT.T @ np.diag(s_inv) @ U.T
         cov_r = J_pinv @ J_pinv.T * chi2_red
-
         cov[np.ix_(good, good)] = cov_r
 
     p_err = np.sqrt(np.diag(cov))
 
     # Output
-    keys = ['amp', 'x0', 'y0', 'alpha_x', 'alpha_y', 'beta', 'theta', 'offset']
-    params = dict(zip(keys, popt))
-    errors = {k + '_err': e for k, e in zip(keys, p_err)}
+    keys = ['amp', 'x0', 'y0', 'alpha', 'q', 'beta', 'theta', 'offset']
 
-    return {
-        'params': params,
-        'errors': errors,
-        'covariance': cov,
-        'success': bool(res.success),
-        'message': res.message,
-        'chi2': chi2,
-        'chi2_red': chi2_red,
-        'dof': dof,
-        'cutout_slice': (slice(y0, y1), slice(x0, x1)),
-    }
+    # Convert to alpha_x, alpha_y
+    amp, x0, y0, alpha, q, beta, theta, offset = popt
+    sqrt_q = np.sqrt(q)
+    alpha_err = p_err[keys.index('alpha')]
+    q_err = p_err[keys.index('q')]
+    alpha_x = alpha / sqrt_q
+    alpha_y = alpha * sqrt_q
+    alpha_x_err = np.sqrt((alpha_err / sqrt_q) ** 2 + (alpha * q_err / (2.0 * q ** (3 / 2))) ** 2)
+    alpha_y_err = np.sqrt((alpha_err * sqrt_q) ** 2 + (alpha * q_err / (2.0 * sqrt_q)) ** 2)
+
+    params = {'amp': amp, 'x0': x0, 'y0': y0,
+              'alpha_x': alpha_x, 'alpha_y': alpha_y,
+              'beta': beta, 'theta': theta, 'offset': offset}
+
+    errors = {'amp_err': p_err[0], 'x0_err': p_err[1], 'y0_err': p_err[2],
+              'alpha_x_err': alpha_x_err, 'alpha_y_err': alpha_y_err,
+              'beta_err': p_err[5], 'theta_err': p_err[6], 'offset_err': p_err[7]}
+
+    return {'params': params, 'errors': errors, 'covariance': cov,
+            'success': bool(res.success), 'message': res.message,
+            'chi2': chi2, 'chi2_red': chi2_red,
+            'dof': dof, 'cutout_slice': (slice(y0, y1), slice(x0, x1))}
 
 
 def evaluate_smooth_moffat(psf_spline_model, wavelength_axis):
+    """
+    Evaluate spectrally smooth Moffat PSF model at given wavelength domain.
+    """
     x0 = psf_spline_model['x0'](wavelength_axis)
     y0 = psf_spline_model['y0'](wavelength_axis)
     ax = psf_spline_model['ax'](wavelength_axis)
@@ -397,8 +381,8 @@ def moffat_normalisation(alpha_x, alpha_y, beta):
     """
     Analytic integral of the elliptical Moffat over infinite plane:
       Integral M * dA = pi * alpha_x * alpha_y / (beta - 1)
-    See: 2D Moffat normalisation for elliptical axes.
-    We return the factor so that P = M / integral => sum(P) ~ 1 (continuum normalisation).
+    2D Moffat normalisation for elliptical axes.
+    Returns the factor so that P = M / integral => sum(P) ~ 1 (continuum normalisation).
     """
     if beta <= 1.0:
         # pathological; return large value to avoid division by zero
@@ -411,7 +395,6 @@ def build_spectrally_smooth_psf_model(wave_centers, psf_fit_results):
     Takes your PSF fits per spectral bin and builds smooth spline models
     for x0(λ), y0(λ), σx(λ), σy(λ), θ(λ)
     """
-
     x0 = np.array([r['params']['x0'] for r in psf_fit_results])
     y0 = np.array([r['params']['y0'] for r in psf_fit_results])
     sx = np.array([r['params']['sigma_x'] for r in psf_fit_results])
@@ -425,17 +408,11 @@ def build_spectrally_smooth_psf_model(wave_centers, psf_fit_results):
     spl_sy = UnivariateSpline(wave_centers, sy, s=10)
     spl_th = UnivariateSpline(wave_centers, th, s=0.5)
 
-    return {
-        'x0': spl_x0,
-        'y0': spl_y0,
-        'sx': spl_sx,
-        'sy': spl_sy,
-        'th': spl_th
-    }
+    return {'x0': spl_x0, 'y0': spl_y0, 'sx': spl_sx, 'sy': spl_sy, 'th': spl_th}
 
 
 def build_spectrally_smooth_moffat_model(wave_centers, fit_results, beta_default=4.5,
-                                         s_x0=0.5, s_y0=0.5, s_alpha=10, s_beta=0.1, s_theta=0.1):
+                                         s_x0=8, s_y0=8, s_alpha=10, s_beta=8, s_theta=8):
     """
     Build UnivariateSplines for x0(λ), y0(λ), alpha_x(λ), alpha_y(λ), beta(λ), theta(λ).
     - If fit_results contains sigma_x/sigma_y (Gaussian fit), convert using beta_default.
@@ -453,7 +430,6 @@ def build_spectrally_smooth_moffat_model(wave_centers, fit_results, beta_default
         x0[k] = r['params'].get('x0', np.nan)
         y0[k] = r['params'].get('y0', np.nan)
         th[k] = r['params'].get('theta', 0.0)
-
         ax[k] = r['params'].get('alpha_x', np.nan)
         ay[k] = r['params'].get('alpha_y', np.nan)
         be[k] = r['params'].get('beta', beta_default)
@@ -465,6 +441,7 @@ def build_spectrally_smooth_moffat_model(wave_centers, fit_results, beta_default
     bee = np.array([r['errors'].get('beta_err', np.inf) for r in fit_results])
     the = np.array([r['errors'].get('theta_err', np.inf) for r in fit_results])
 
+    # Build splines for position on 2D image
     spl_x0 = _make_spline(wave_centers, x0, x0e, s_x0)
     spl_y0 = _make_spline(wave_centers, y0, y0e, s_y0)
 
@@ -483,41 +460,32 @@ def build_spectrally_smooth_moffat_model(wave_centers, fit_results, beta_default
     spl_be = _make_spline(wave_centers, be, bee, s_beta)
     spl_th = _make_spline(wave_centers, th, the, s_theta)
 
-    return {
-        'x0': spl_x0,
-        'y0': spl_y0,
-        'ax': spl_ax,
-        'ay': spl_ay,
-        'beta': spl_be,
-        'th': spl_th
-    }
+    return {'x0': spl_x0, 'y0': spl_y0, 'ax': spl_ax, 'ay': spl_ay, 'beta': spl_be, 'th': spl_th}
 
 
 def evaluate_smooth_psf(psf_spline_model, wavelength_axis):
     """
-    Returns smooth PSF parameters at every wavelength slice.
+    Returns smooth Gaussian PSF parameters at every wavelength slice.
     """
-
     x0 = psf_spline_model['x0'](wavelength_axis)
     y0 = psf_spline_model['y0'](wavelength_axis)
     sx = psf_spline_model['sx'](wavelength_axis)
     sy = psf_spline_model['sy'](wavelength_axis)
     th = psf_spline_model['th'](wavelength_axis)
-
     return x0, y0, sx, sy, th
 
 
 class PsfFit:
 
     def __init__(self, flux_cube, error_cube, init_row, init_col, model_type):
-        # cubes are in (n_wave, n_row, n_col) format.
+        # cubes are in (n_wave, n_row, n_col).
         self.flux = flux_cube
         self.error = error_cube  # Error must be variance
         self.n_wave, self.ny, self.nx = self.flux.shape
 
         # Scale for easier fitting
         self.flux *= norm_factor
-        self.error *= norm_factor**2
+        self.error *= norm_factor ** 2
 
         # Initial guess for PSF centre
         self.init_row = init_row
@@ -543,14 +511,10 @@ class PsfFit:
     
             # build smooth PSF model    
             psf_spline_model = build_spectrally_smooth_psf_model(
-                wave_centers,
-                self.fit_results
-            )
+                wave_centers, self.fit_results)
     
             self.x0_arr, self.y0_arr, self.sx_arr, self.sy_arr, self.th_arr = evaluate_smooth_psf(
-                psf_spline_model,
-                np.arange(self.n_wave)
-            )
+                psf_spline_model, np.arange(self.n_wave))
     
             self.extract_spectrum()
 
@@ -560,7 +524,7 @@ class PsfFit:
             
         elif self.model_type == 'moffat':
             self.keys = ['amp', 'x0', 'y0', 'alpha_x', 'alpha_y', 'beta', 'theta', 'offset']
-            self.fit_results = self.fit_moffat_psf()
+            self.fit_results = self.fit_psf()
 
             # build smooth Moffat PSF model
             psf_spline_model = build_spectrally_smooth_moffat_model(wave_centers, self.fit_results)
@@ -578,6 +542,9 @@ class PsfFit:
             raise ValueError("Unknown model_type. Choose 'gaussian' or 'moffat'.")
 
     def fit_psf(self):
+        """
+        Fit a PSF profile to each spectral bin.
+        """
         fit_results = []
 
         for flux_bin, error_bin in zip(self.flux_bins, self.error_bins):
@@ -585,40 +552,24 @@ class PsfFit:
             image_2d = np.nansum(flux_bin, axis=0)
             error_2d = np.nansum(error_bin, axis=0)
 
-            # Fit PSF model to the 2D image
-            fit_result = fit_gaussian_2d(
-                image=image_2d,
-                variance=error_2d,
-                x0_init=self.init_col,
-                y0_init=self.init_row,
-                box=10
-            )
+            if self.model_type == 'gaussian':
+                # Fit Gaussian PSF model to the 2D image
+                fit_result = fit_gaussian_2d(image=image_2d, variance=error_2d,
+                                             x0_init=self.init_col, y0_init=self.init_row, box=10)
+            elif self.model_type == 'moffat':
+                # Fit Moffat PSF model to the 2D image
+                fit_result = fit_moffat_2d(image=image_2d, variance=error_2d,
+                                           x0_init=self.init_col, y0_init=self.init_row, box=5)
+            else:
+                raise ValueError("Unknown model_type. Choose 'gaussian' or 'moffat'.")
 
             fit_results.append(fit_result)
 
-        return fit_results
-    
-    def fit_moffat_psf(self):
-        fit_results = []
-
-        for flux_bin, error_bin in zip(self.flux_bins, self.error_bins):
-            # Sum over wavelength axis to get 2D image for PSF fitting
-            image_2d = np.nansum(flux_bin, axis=0)
-            error_2d = np.nansum(error_bin, axis=0)  # Variance here
-
-            # Fit Moffat PSF model to the 2D image
-            fit_result = fit_moffat_2d(
-                image=image_2d,
-                variance=error_2d,
-                x0_init=self.init_col,
-                y0_init=self.init_row,
-                box=5)
-            fit_results.append(fit_result)
         return fit_results
 
     def extract_spectrum(self):
         """
-        True PSF-weighted optimal extraction using a spectrally smooth PSF model.
+        Optimal extraction (Horne 1986) using a spectrally smooth Gaussian PSF model.
 
         self.flux  -> (n_wave, ny, nx)
         self.error -> (n_wave, ny, nx)  [VARIANCE cube]
@@ -647,7 +598,7 @@ class PsfFit:
             y_max = min(self.ny, int(y0) + ry + 1)
 
             # extract data + variance
-            D = self.flux[i, y_min:y_max, x_min:x_max]
+            D = self.flux[i, y_min:y_max, x_min:x_max]  # DATA
             V = self.error[i, y_min:y_max, x_min:x_max]  # VARIANCE
 
             if not np.any(np.isfinite(D)):
@@ -664,17 +615,7 @@ class PsfFit:
 
             xr = cos_t * (xx - x0) + sin_t * (yy - y0)
             yr = -sin_t * (xx - x0) + cos_t * (yy - y0)
-
-            P = (1 / (2 * np.pi * sx * sy)) * np.exp(-0.5 * ((xr / sx) ** 2 + (yr / sy) ** 2))
-
-            # P = np.exp(-0.5 * ((xr / sx) ** 2 + (yr / sy) ** 2))
-            # normalize PSF
-            # P_sum = np.nansum(P)
-            # if P_sum <= 0:
-            #     self.extracted_spectrum[i] = np.nan
-            #     self.extracted_error[i] = np.nan
-            #     continue
-            # P = P / P_sum  # discrete normalization
+            P = (1 / (2 * np.pi * sx * sy)) * np.exp(-0.5 * ((xr / sx) ** 2 + (yr / sy) ** 2))  # PSF PROFILE
 
             # valid variance mask
             mask = np.isfinite(D) & np.isfinite(V) & (V > 0)
@@ -702,14 +643,14 @@ class PsfFit:
 
     def extract_spectrum_moffat_weighted(self, beta_default=4.5, trunc_sigma=2.5):
         """
-        Optimal extraction using a spectrally-smooth Moffat PSF.
+        Optimal extraction (Horne 1986) using a spectrally-smooth Moffat PSF.
         - self.flux  : (n_wave, ny, nx)
         - self.error : (n_wave, ny, nx)  [VARIANCE]
         Returns:
           extracted_flux, extracted_error (1-sigma)
         """
 
-        # build smooth model
+        # build smooth PSF model
         wave_centers = np.linspace(0, self.n_wave - 1, n_spec_bin)
         psf_model = build_spectrally_smooth_moffat_model(wave_centers, self.fit_results, beta_default=beta_default)
         x0_arr, y0_arr, ax_arr, ay_arr, be_arr, th_arr = evaluate_smooth_moffat(psf_model, np.arange(self.n_wave))
@@ -748,6 +689,7 @@ class PsfFit:
             # analytic norm (continuous integral) for elliptical moffat:
             integral = moffat_normalisation(alpha_x, alpha_y, beta)
 
+            # PROFILE
             if np.isfinite(integral) and integral > 0:
                 P = M / integral  # continuous normalization (sum(P) ~ 1)
             else:
@@ -789,7 +731,7 @@ class PsfFit:
 
         fig, axes = plt.subplots(8, 3, figsize=(6, 16))
 
-        # Generate and plot a psf model for each spectral bin based on the fit
+        # Generate and plot a PSF model for each spectral bin based on the fit
         for i in range(8):
             yy, xx = np.mgrid[0:self.ny, 0:self.nx]
             image_2d = np.nansum(self.flux_bins[i], axis=0)
@@ -807,6 +749,7 @@ class PsfFit:
             im = axes[i, 1].imshow(model, origin='lower', cmap='viridis')
             im.set_clim(c_lim)
             plt.colorbar(im, ax=axes[i, 1], fraction=0.046*35/25, pad=0.04)
+            # Forcing centered colourmap for residuals
             im = axes[i, 2].imshow(resid, origin='lower', cmap='bwr', vmin=-resid_max, vmax=resid_max)
             plt.colorbar(im, ax=axes[i, 2], fraction=0.046*35/25, pad=0.04)
 
@@ -820,6 +763,9 @@ class PsfFit:
         plt.close()
 
     def get_single_fit_plot(self, bin_psf=3):
+        """
+        Generate data, model, residual images for a single PSF fit bin.
+        """
         if self.fit_results:
             result = self.fit_results[bin_psf]
 
@@ -828,7 +774,6 @@ class PsfFit:
             image_2d = np.nansum(self.flux_bins[bin_psf], axis=0)
 
             resid, model = make_model_image(params, xx, yy, image_2d, model_type=self.model_type)
-
             image_2d /= norm_factor
             resid /= norm_factor
             model /= norm_factor
