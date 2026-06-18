@@ -1,4 +1,5 @@
 # PySpecExtract
+[![DOI](https://zenodo.org/badge/635694695.svg)](https://doi.org/10.5281/zenodo.20741124)  
 Python `Tkinter` based GUI application to extract spectra from IFU cubes.
 Designed to work with ANU 2.3m WiFeS reduced data cubes, but can technically work with any IFU data cube
 by specifying cube dimensions and telescope-specific `.fits` headers.
